@@ -21,6 +21,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     if (view === 'settings')  loadSettings();
     if (view === 'approvals') renderApprovalQueue();
     if (view === 'leads')     renderLeads();
+    if (view === 'library')   loadLibrary();
   });
 });
 
@@ -516,6 +517,141 @@ document.getElementById('btnConfirmSend').addEventListener('click', () => {
       flashResult('sendResult', 'err', '❌ ' + data.error);
     }
   });
+});
+
+// ── Reference Library ──────────────────────────────────────────
+function loadLibrary() {
+  fetch('/api/library').then(r => r.json()).then(data => {
+    if (!data.ok) return;
+    renderDecks(data.decks);
+    renderCaseStudies(data.case_studies);
+    renderBriefings(data.briefings);
+  });
+}
+
+function renderDecks(decks) {
+  document.getElementById('libDecks').innerHTML = decks.map(d => `
+    <div class="lib-card ${d.exists ? 'ok' : 'missing'}">
+      <div class="lib-card-title">
+        <span class="lib-status-dot ${d.exists ? 'ok' : 'missing'}"></span>
+        ${esc(d.sector_label)}
+      </div>
+      <div class="lib-card-sub">${esc(d.filename)}</div>
+      <div class="lib-card-meta">
+        ${d.exists ? `${d.size_kb} KB · updated ${esc(d.modified)}` : '⚠ File not uploaded yet'}
+      </div>
+      <div class="lib-card-actions">
+        <label class="lib-btn-replace">
+          ${d.exists ? '↑ Replace' : '↑ Upload'}
+          <input type="file" accept=".pptx,.pdf" onchange="uploadDeck('${esc(d.sector_key)}', this)"/>
+        </label>
+        ${d.exists ? `<a class="lib-btn-download" href="/api/library/download/decks/${encodeURIComponent(d.filename)}" download>↓ Download</a>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+function renderCaseStudies(cs) {
+  document.getElementById('libCaseStudies').innerHTML = cs.map((c, i) => `
+    <div class="lib-card ${c.exists ? 'ok' : 'missing'}">
+      <div class="lib-card-title">
+        <span class="lib-status-dot ${c.exists ? 'ok' : 'missing'}"></span>
+        ${esc(c.label)}
+      </div>
+      <div class="lib-card-sub" style="font-size:10px">${esc(c.filename)}</div>
+      <div class="lib-card-meta">
+        ${c.exists ? `${c.size_kb} KB · updated ${esc(c.modified)}` : '⚠ File not uploaded yet'}
+      </div>
+      <div class="lib-card-actions">
+        <label class="lib-btn-replace">
+          ${c.exists ? '↑ Replace' : '↑ Upload'}
+          <input type="file" accept=".pdf" onchange="uploadCaseStudy(${i}, this)"/>
+        </label>
+        ${c.exists ? `<a class="lib-btn-download" href="/api/library/download/case_studies/${encodeURIComponent(c.filename)}" download>↓ Download</a>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+function renderBriefings(briefings) {
+  const container = document.getElementById('libBriefings');
+  if (!briefings.length) {
+    container.innerHTML = '<div class="lib-loading">No briefing documents uploaded yet.</div>';
+    return;
+  }
+  container.innerHTML = briefings.map(b => `
+    <div class="lib-card ${b.exists ? 'ok' : 'missing'}">
+      <div class="lib-card-title">
+        <span class="lib-status-dot ${b.exists ? 'ok' : 'missing'}"></span>
+        ${esc(b.label)}
+      </div>
+      ${b.description ? `<div class="lib-card-sub">${esc(b.description)}</div>` : ''}
+      <div class="lib-card-meta">
+        ${b.exists ? `${b.size_kb} KB · uploaded ${esc(b.uploaded_at)}` : '⚠ File missing'}
+      </div>
+      <div class="lib-card-actions">
+        ${b.exists ? `<a class="lib-btn-download" href="/api/library/download/briefings/${encodeURIComponent(b.filename)}" download>↓ Download</a>` : ''}
+        <button class="lib-btn-delete" onclick="deleteBriefing('${esc(b.filename)}')">✕ Remove</button>
+      </div>
+    </div>`).join('');
+}
+
+function uploadDeck(sectorKey, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch(`/api/library/deck/${sectorKey}`, { method: 'POST', body: fd })
+    .then(r => r.json()).then(d => { if (d.ok) loadLibrary(); });
+}
+
+function uploadCaseStudy(index, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch(`/api/library/case-study/${index}`, { method: 'POST', body: fd })
+    .then(r => r.json()).then(d => { if (d.ok) loadLibrary(); });
+}
+
+function deleteBriefing(filename) {
+  if (!confirm(`Remove "${filename}" from the library?`)) return;
+  fetch(`/api/library/briefing/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+    .then(r => r.json()).then(d => { if (d.ok) loadLibrary(); });
+}
+
+// Briefing upload
+document.getElementById('briefingFile').addEventListener('change', e => {
+  document.getElementById('briefingFileName').textContent =
+    e.target.files[0] ? e.target.files[0].name : 'No file chosen';
+});
+
+document.getElementById('btnUploadBriefing').addEventListener('click', () => {
+  const file  = document.getElementById('briefingFile').files[0];
+  const label = document.getElementById('briefingLabel').value.trim();
+  const desc  = document.getElementById('briefingDesc').value.trim();
+  const res   = document.getElementById('briefingUploadResult');
+  if (!file) {
+    res.className = 'briefing-upload-result err'; res.textContent = 'Please choose a file first.';
+    res.classList.remove('hidden'); return;
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('label', label || file.name);
+  fd.append('description', desc);
+  fetch('/api/library/briefing', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => {
+      res.className = 'briefing-upload-result ' + (d.ok ? 'ok' : 'err');
+      res.textContent = d.ok ? '✓ ' + d.message : '❌ ' + d.error;
+      res.classList.remove('hidden');
+      if (d.ok) {
+        document.getElementById('briefingFile').value = '';
+        document.getElementById('briefingFileName').textContent = 'No file chosen';
+        document.getElementById('briefingLabel').value = '';
+        document.getElementById('briefingDesc').value  = '';
+        loadLibrary();
+      }
+      setTimeout(() => res.classList.add('hidden'), 4000);
+    });
 });
 
 // ── Sent log ───────────────────────────────────────────────────

@@ -40,18 +40,36 @@ SENT_LOG_PATH = os.path.join(BASE_DIR, "sent_log.json")
 # Running on Render (or any cloud host) vs local Windows machine
 IS_CLOUD = os.getenv("RENDER") == "true" or os.getenv("IS_CLOUD") == "true"
 
-# Where the sector decks live — local Windows path or cloud uploads folder
-DECK_DIR = os.path.join(BASE_DIR, "uploads", "decks") if IS_CLOUD \
-           else r"C:\Users\mypc\Downloads"
+# ── Reference library dirs ────────────────────────────────────────────────────
+# All dirs use the app's own "library" folder so files persist locally
+# and are uploaded by the user on Render via the Reference Materials tab.
+LIBRARY_DIR       = os.path.join(BASE_DIR, "library")
+DECK_DIR          = os.path.join(LIBRARY_DIR, "decks")
+CASE_STUDY_DIR    = os.path.join(LIBRARY_DIR, "case_studies")
+BRIEFING_DIR      = os.path.join(LIBRARY_DIR, "briefings")
+LIBRARY_META_PATH = os.path.join(LIBRARY_DIR, "meta.json")
 
-# Where case studies live
-CASE_STUDY_DIR = os.path.join(BASE_DIR, "uploads", "case_studies") if IS_CLOUD \
-                 else r"C:\Users\mypc\OneDrive\Desktop\New folder\CASE STUDIES"
+for _d in (LIBRARY_DIR, DECK_DIR, CASE_STUDY_DIR, BRIEFING_DIR):
+    os.makedirs(_d, exist_ok=True)
 
-# Create upload dirs on cloud
-if IS_CLOUD:
-    os.makedirs(DECK_DIR, exist_ok=True)
-    os.makedirs(CASE_STUDY_DIR, exist_ok=True)
+# On first run (local), symlink / copy existing local files into the library
+def _seed_local_files():
+    """Copy existing local files into the library on first run."""
+    import shutil
+    local_deck_src = r"C:\Users\mypc\Downloads"
+    local_cs_src   = r"C:\Users\mypc\OneDrive\Desktop\New folder\CASE STUDIES"
+    for fname in [v for v in SECTOR_DECKS.values()]:
+        src = os.path.join(local_deck_src, fname)
+        dst = os.path.join(DECK_DIR, fname)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try: shutil.copy2(src, dst)
+            except Exception: pass
+    for _, fname in CASE_STUDIES:
+        src = os.path.join(local_cs_src, fname)
+        dst = os.path.join(CASE_STUDY_DIR, fname)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try: shutil.copy2(src, dst)
+            except Exception: pass
 
 # ── Sector → deck filename mapping ────────────────────────────────────────────
 SECTOR_DECKS = {
@@ -481,6 +499,34 @@ def get_case_study_path(filename):
     return path if os.path.exists(path) else None
 
 
+# ── Library metadata helpers ──────────────────────────────────────────────────
+
+def load_library_meta():
+    if os.path.exists(LIBRARY_META_PATH):
+        with open(LIBRARY_META_PATH) as f:
+            return json.load(f)
+    return {"briefings": []}
+
+
+def save_library_meta(meta):
+    with open(LIBRARY_META_PATH, "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def file_info(path, fname):
+    """Return size + modified date for a file."""
+    try:
+        st = os.stat(path)
+        return {
+            "filename": fname,
+            "size_kb":  round(st.st_size / 1024, 1),
+            "modified": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "exists":   True,
+        }
+    except Exception:
+        return {"filename": fname, "size_kb": 0, "modified": "", "exists": False}
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 def load_settings():
@@ -832,12 +878,133 @@ def list_case_studies():
     return jsonify({"ok": True, "case_studies": result})
 
 
+# ── Reference Library routes ──────────────────────────────────────────────────
+
+@app.route("/api/library", methods=["GET"])
+def get_library():
+    """Return full library status — decks, case studies, briefings."""
+    # Sector decks
+    decks = []
+    for sector_key, fname in SECTOR_DECKS.items():
+        path = os.path.join(DECK_DIR, fname)
+        info = file_info(path, fname)
+        info["sector_key"]   = sector_key
+        info["sector_label"] = SECTOR_LABELS.get(sector_key, sector_key)
+        decks.append(info)
+
+    # Case studies
+    case_studies = []
+    for label, fname in CASE_STUDIES:
+        path = os.path.join(CASE_STUDY_DIR, fname)
+        info = file_info(path, fname)
+        info["label"] = label
+        case_studies.append(info)
+
+    # Briefings (free-form uploads)
+    meta = load_library_meta()
+    briefings = []
+    for b in meta.get("briefings", []):
+        path = os.path.join(BRIEFING_DIR, b["filename"])
+        info = file_info(path, b["filename"])
+        info["label"]       = b.get("label", b["filename"])
+        info["description"] = b.get("description", "")
+        info["uploaded_at"] = b.get("uploaded_at", "")
+        briefings.append(info)
+
+    return jsonify({"ok": True, "decks": decks,
+                    "case_studies": case_studies, "briefings": briefings})
+
+
+@app.route("/api/library/deck/<sector_key>", methods=["POST"])
+def upload_deck(sector_key):
+    """Replace a sector deck."""
+    if sector_key not in SECTOR_DECKS:
+        return jsonify({"ok": False, "error": "Unknown sector"}), 400
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file"}), 400
+    fname = SECTOR_DECKS[sector_key]
+    dest  = os.path.join(DECK_DIR, fname)
+    f.save(dest)
+    return jsonify({"ok": True, "message": f"Deck updated for {SECTOR_LABELS[sector_key]}",
+                    **file_info(dest, fname)})
+
+
+@app.route("/api/library/case-study/<int:index>", methods=["POST"])
+def upload_case_study(index):
+    """Replace a case study by index."""
+    if index < 0 or index >= len(CASE_STUDIES):
+        return jsonify({"ok": False, "error": "Invalid index"}), 400
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file"}), 400
+    _, fname = CASE_STUDIES[index]
+    dest = os.path.join(CASE_STUDY_DIR, fname)
+    f.save(dest)
+    return jsonify({"ok": True, "message": f"Case study {index+1} updated",
+                    **file_info(dest, fname)})
+
+
+@app.route("/api/library/briefing", methods=["POST"])
+def upload_briefing():
+    """Upload a new briefing document (PDF, DOCX, PPTX)."""
+    f     = request.files.get("file")
+    label = request.form.get("label", "")
+    desc  = request.form.get("description", "")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file"}), 400
+    safe_fname = re.sub(r"[^\w.\-]", "_", f.filename)
+    dest = os.path.join(BRIEFING_DIR, safe_fname)
+    f.save(dest)
+    meta = load_library_meta()
+    # Remove existing entry with same filename
+    meta["briefings"] = [b for b in meta["briefings"] if b["filename"] != safe_fname]
+    meta["briefings"].append({
+        "filename":    safe_fname,
+        "label":       label or f.filename,
+        "description": desc,
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    save_library_meta(meta)
+    return jsonify({"ok": True, "message": f"Briefing '{label or f.filename}' uploaded",
+                    **file_info(dest, safe_fname)})
+
+
+@app.route("/api/library/briefing/<filename>", methods=["DELETE"])
+def delete_briefing(filename):
+    """Delete a briefing document."""
+    safe = re.sub(r"[^\w.\-]", "_", filename)
+    path = os.path.join(BRIEFING_DIR, safe)
+    if os.path.exists(path):
+        os.remove(path)
+    meta = load_library_meta()
+    meta["briefings"] = [b for b in meta["briefings"] if b["filename"] != safe]
+    save_library_meta(meta)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/library/download/<category>/<filename>")
+def download_library_file(category, filename):
+    """Download any library file."""
+    safe = re.sub(r"[^\w.\-]", "_", filename)
+    dirs = {"decks": DECK_DIR, "case_studies": CASE_STUDY_DIR, "briefings": BRIEFING_DIR}
+    folder = dirs.get(category)
+    if not folder:
+        return "Not found", 404
+    path = os.path.join(folder, safe)
+    if not os.path.exists(path):
+        return "File not found", 404
+    return send_file(path, as_attachment=True)
+
+
 @app.route("/api/health")
 def health():
     return jsonify({"ok": True, "service": "FEAAM Priority Sender"})
 
 
 if __name__ == "__main__":
+    if not IS_CLOUD:
+        _seed_local_files()   # copy local decks/case-studies into library on first run
     port  = int(os.getenv("PORT", 5055))
     debug = not IS_CLOUD
     print(f"\n  FEAAM Priority Sender  ->  http://localhost:{port}\n")

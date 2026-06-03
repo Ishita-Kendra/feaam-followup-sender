@@ -21,6 +21,7 @@
       ✅ Approvals
       <span class="approval-count hidden" id="approvalBadge">0</span>
     </button>
+    <button class="nav-btn" data-view="library">📚 Reference Library</button>
     <button class="nav-btn" data-view="sent">📤 Sent Log</button>
     <button class="nav-btn" data-view="settings">⚙ Settings</button>
   </nav>
@@ -203,6 +204,70 @@
         </div>
 
         <div class="send-result hidden" id="sendResult"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     REFERENCE LIBRARY VIEW
+═══════════════════════════════════════════════════════════════════ -->
+<section class="view" id="view-library">
+  <div class="library-wrap">
+
+    <div class="library-header">
+      <h2>📚 Reference Library</h2>
+      <p class="library-desc">All files stored here persist until you manually replace or delete them. Files auto-attach to emails based on the lead's sector.</p>
+    </div>
+
+    <!-- ── Sector Decks ── -->
+    <div class="lib-section">
+      <div class="lib-section-title">
+        🎯 Sector Decks
+        <span class="lib-section-sub">Primary attachment — auto-matched to lead sector</span>
+      </div>
+      <div class="lib-grid" id="libDecks">
+        <div class="lib-loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Case Studies ── -->
+    <div class="lib-section">
+      <div class="lib-section-title">
+        📄 Case Studies
+        <span class="lib-section-sub">Secondary attachments — suggested based on sector, toggled per email</span>
+      </div>
+      <div class="lib-grid" id="libCaseStudies">
+        <div class="lib-loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Briefing Docs ── -->
+    <div class="lib-section">
+      <div class="lib-section-title">
+        📋 Briefing Documents
+        <span class="lib-section-sub">FEAAM company info, correction notes, strategy docs — used as context for email generation</span>
+      </div>
+      <div class="lib-grid" id="libBriefings">
+        <div class="lib-loading">Loading…</div>
+      </div>
+      <!-- Upload new briefing -->
+      <div class="briefing-upload-box">
+        <div class="briefing-upload-title">+ Add Briefing Document</div>
+        <div class="briefing-upload-row">
+          <input type="text" class="briefing-label-input" id="briefingLabel" placeholder="Label (e.g. FEAAM Technology Overview)"/>
+          <input type="text" class="briefing-label-input" id="briefingDesc"  placeholder="Short description (optional)"/>
+        </div>
+        <div class="briefing-upload-row">
+          <label class="briefing-file-btn">
+            Choose File
+            <input type="file" id="briefingFile" accept=".pdf,.docx,.pptx,.xlsx" hidden/>
+          </label>
+          <span class="briefing-file-name" id="briefingFileName">No file chosen</span>
+          <button class="btn-upload-briefing" id="btnUploadBriefing">Upload</button>
+        </div>
+        <div class="briefing-upload-result hidden" id="briefingUploadResult"></div>
       </div>
     </div>
 
