@@ -64,6 +64,29 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; font-
   color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;
 }
 .btn-goto-leads:hover { background: #238636; }
+/* ── AI Research bar ─────────────────────────────────────────── */
+.research-bar {
+  max-width: 520px; margin: 14px auto 0;
+  background: #0d1f35; border: 1px solid #1d4b7a;
+  border-radius: 10px; padding: 16px 18px;
+  display: flex; gap: 14px; align-items: flex-start;
+}
+.research-icon { font-size: 22px; padding-top: 2px; }
+.research-info { flex: 1; }
+.research-title { color: #58a6ff; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.research-sub { color: #8b949e; font-size: 12px; margin-bottom: 10px; }
+.research-track { background: #21262d; border-radius: 4px; height: 6px; overflow: hidden; }
+.research-fill {
+  background: linear-gradient(90deg, #1d4b7a, #58a6ff);
+  height: 100%; border-radius: 4px; width: 0%;
+  transition: width .4s ease;
+  animation: research-pulse 1.5s ease-in-out infinite;
+}
+@keyframes research-pulse { 0%,100% { opacity:1; } 50% { opacity:.6; } }
+.research-bar.done { border-color: #1f8e3d; background: #0d2818; }
+.research-bar.done .research-title { color: #56d364; }
+.research-bar.done .research-fill { background: #1f8e3d; animation: none; }
+
 .priority-legend { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
 .legend-item { display: flex; align-items: center; gap: 10px; color: #8b949e; font-size: 13px; }
 .legend-item code { background: #21262d; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #e3b341; }

@@ -45,6 +45,17 @@
       <div class="spinner"></div>
       <span>Analysing and ranking leads…</span>
     </div>
+
+    <!-- AI research progress bar (shown after upload if companies need sizing) -->
+    <div class="research-bar hidden" id="researchBar">
+      <div class="research-icon">🔍</div>
+      <div class="research-info">
+        <div class="research-title">Claude is researching company sizes…</div>
+        <div class="research-sub" id="researchSub">Looking up employee counts for unknown companies</div>
+        <div class="research-track"><div class="research-fill" id="researchFill"></div></div>
+      </div>
+    </div>
+
     <div class="upload-result hidden" id="uploadResult"></div>
   </div>
 

@@ -11,11 +11,23 @@ FEAAM Priority Sender
 All emails require MANUAL confirmation before sending — nothing goes out automatically.
 """
 
-import io, os, re, json, uuid, smtplib, tempfile
+import io, os, re, json, uuid, smtplib, tempfile, threading
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, send_file
 import pandas as pd
+
+# ── Anthropic client (for company research) ───────────────────────────────────
+try:
+    import anthropic as _anthropic
+    _ai = _anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    AI_AVAILABLE = True
+except Exception:
+    _ai = None
+    AI_AVAILABLE = False
+
+# In-memory company size cache  {company_name_lower: {"employees": int, "source": str}}
+_company_cache = {}
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
@@ -294,13 +306,80 @@ def detect_sector(text):
     return None
 
 
+def research_company_size_batch(company_names: list) -> dict:
+    """
+    Ask Claude to look up employee counts for a list of companies.
+    Returns {company_name: {"employees": int_or_None, "tier": str, "source": "ai"}}
+    Uses Claude's training knowledge + web search tool if available.
+    """
+    if not AI_AVAILABLE or not company_names:
+        return {}
+
+    # Deduplicate
+    unique = list({c.strip() for c in company_names if c.strip()})
+    results = {}
+
+    # Process in batches of 20 to keep prompt size manageable
+    batch_size = 20
+    for i in range(0, len(unique), batch_size):
+        batch = unique[i:i + batch_size]
+        companies_str = "\n".join(f"- {c}" for c in batch)
+
+        prompt = f"""For each company below, provide their approximate current number of employees.
+Use your training knowledge. If you are not sure, give your best estimate based on what you know about the company's industry and scale.
+
+Companies:
+{companies_str}
+
+Reply ONLY with a JSON object mapping each company name exactly to an object with:
+- "employees": integer (best estimate), or null if completely unknown
+- "tier": "small" (<250), "medium" (250-5000), "large" (>5000), or "unknown"
+- "note": very brief note (e.g. "Global OEM", "SME", "Startup")
+
+Example format:
+{{"Volvo Group": {{"employees": 100000, "tier": "large", "note": "Global truck/automotive OEM"}},
+ "SomeStartup": {{"employees": null, "tier": "unknown", "note": "Insufficient data"}}}}
+
+Return valid JSON only, no other text."""
+
+        try:
+            response = _ai.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            raw = response.content[0].text.strip()
+            # Strip markdown code fences if present
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            for company, info in data.items():
+                results[company] = {
+                    "employees": info.get("employees"),
+                    "tier":      info.get("tier", "unknown"),
+                    "note":      info.get("note", ""),
+                    "source":    "ai",
+                }
+        except Exception as e:
+            print(f"[research] batch error: {e}")
+
+    return results
+
+
+def get_company_size(company_name: str) -> dict:
+    """Return cached size info for a company, or empty dict."""
+    key = company_name.strip().lower()
+    return _company_cache.get(key, {})
+
+
 def score_lead(row_dict):
     """
     Returns (priority, sector_key, score_breakdown)
     priority: 1, 2, or 0 (unknown)
     """
-    # --- Employee count ---
+    # --- Employee count: check spreadsheet columns first, then AI cache ---
     emp = 0
+    emp_source = "sheet"
     for k in ("employees", "employee_count", "headcount", "staff", "size", "num_employees"):
         v = row_dict.get(k) or row_dict.get(k.replace("_", " ")) or row_dict.get(k.title())
         if v:
@@ -309,6 +388,14 @@ def score_lead(row_dict):
                 break
             except Exception:
                 pass
+
+    # Fall back to AI research cache
+    if emp == 0:
+        company = row_dict.get("company", "")
+        cached = get_company_size(company)
+        if cached.get("employees"):
+            emp = cached["employees"]
+            emp_source = "ai"
 
     if 250 <= emp <= 5000:
         priority = 1
@@ -439,7 +526,8 @@ def append_sent_log(entry):
 
 # ── In-memory session store ───────────────────────────────────────────────────
 # Holds the last uploaded + prioritised leads list
-_session = {"leads": []}
+_session = {"leads": [], "df": None, "research_status": "idle",
+            "research_total": 0, "research_done": 0}
 
 
 def normalise_columns(df):
@@ -471,6 +559,50 @@ def index():
     return render_template("index.html")
 
 
+def _build_leads(df):
+    """Build the leads list from a dataframe (after cache is populated)."""
+    leads = []
+    for _, row in df.iterrows():
+        d = row_to_dict(row, df)
+        if not d["email"] and not d["company"]:
+            continue
+        priority, sector, score = score_lead(d)
+        subject, body = generate_email({**d, "sector": sector})
+        deck_path, deck_fname = get_deck_path(sector)
+        suggested_cs = [
+            {"label": CASE_STUDIES[i][0], "filename": CASE_STUDIES[i][1]}
+            for i in SECTOR_CASE_STUDY_MAP.get(sector, [])
+        ]
+        # Attach AI-researched company info
+        cached = get_company_size(d["company"])
+        leads.append({
+            "id":              str(uuid.uuid4()),
+            "company":         d["company"],
+            "full_name":       d["full_name"],
+            "first_name":      d["first_name"],
+            "job_title":       d["job_title"],
+            "email":           d["email"],
+            "location":        d["location"],
+            "sector":          sector,
+            "sector_label":    SECTOR_LABELS.get(sector, "Unknown"),
+            "priority":        priority,
+            "score":           round(score, 1),
+            "subject":         subject,
+            "body":            body,
+            "deck_fname":      deck_fname,
+            "deck_exists":     deck_path is not None,
+            "suggested_cs":    suggested_cs,
+            "sent":            False,
+            "employees":       cached.get("employees"),
+            "emp_tier":        cached.get("tier", ""),
+            "emp_note":        cached.get("note", ""),
+            "emp_source":      cached.get("source", ""),
+        })
+    priority_order = {1: 0, 2: 1, 0: 2}
+    leads.sort(key=lambda x: (priority_order[x["priority"]], -x["score"]))
+    return leads
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload():
     f = request.files.get("file")
@@ -491,51 +623,63 @@ def upload():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-    leads = []
-    for _, row in df.iterrows():
-        d = row_to_dict(row, df)
-        if not d["email"] and not d["company"]:
-            continue
-        priority, sector, score = score_lead(d)
-        subject, body = generate_email({**d, "sector": sector})
-        deck_path, deck_fname = get_deck_path(sector)
-        suggested_cs = [
-            {"label": CASE_STUDIES[i][0], "filename": CASE_STUDIES[i][1]}
-            for i in SECTOR_CASE_STUDY_MAP.get(sector, [])
-        ]
-        leads.append({
-            "id":           str(uuid.uuid4()),
-            "company":      d["company"],
-            "full_name":    d["full_name"],
-            "first_name":   d["first_name"],
-            "job_title":    d["job_title"],
-            "email":        d["email"],
-            "location":     d["location"],
-            "sector":       sector,
-            "sector_label": SECTOR_LABELS.get(sector, "Unknown"),
-            "priority":     priority,
-            "score":        round(score, 1),
-            "subject":      subject,
-            "body":         body,
-            "deck_fname":   deck_fname,
-            "deck_exists":  deck_path is not None,
-            "suggested_cs": suggested_cs,
-            "sent":         False,
-        })
-
-    # Sort: P1 first, then P2, then unknown; within each by score desc
-    priority_order = {1: 0, 2: 1, 0: 2}
-    leads.sort(key=lambda x: (priority_order[x["priority"]], -x["score"]))
-
+    # --- Phase 1: quick score without AI (returns instantly) ---
+    leads = _build_leads(df)
     _session["leads"] = leads
+    _session["df"]    = df          # keep for re-scoring after research
+
     p1 = sum(1 for l in leads if l["priority"] == 1)
     p2 = sum(1 for l in leads if l["priority"] == 2)
     pu = sum(1 for l in leads if l["priority"] == 0)
+
+    # --- Phase 2: kick off background AI research for companies with unknown size ---
+    unknown_companies = list({l["company"] for l in leads
+                               if l["priority"] == 0 and l["company"]})
+    if unknown_companies and AI_AVAILABLE:
+        _session["research_status"] = "running"
+        _session["research_total"]  = len(unknown_companies)
+        _session["research_done"]   = 0
+
+        def _research_bg():
+            try:
+                results = research_company_size_batch(unknown_companies)
+                for company, info in results.items():
+                    _company_cache[company.strip().lower()] = info
+                # Re-score all leads now that cache is populated
+                rebuilt = _build_leads(_session["df"])
+                _session["leads"] = rebuilt
+                _session["research_status"] = "done"
+                _session["research_done"]   = len(results)
+            except Exception as e:
+                print(f"[research_bg] {e}")
+                _session["research_status"] = "error"
+
+        threading.Thread(target=_research_bg, daemon=True).start()
+    else:
+        _session["research_status"] = "skipped"
+
     return jsonify({
-        "ok": True,
-        "total": len(leads),
-        "p1": p1, "p2": p2, "unknown": pu,
-        "leads": leads,
+        "ok":              True,
+        "total":           len(leads),
+        "p1":              p1,
+        "p2":              p2,
+        "unknown":         pu,
+        "leads":           leads,
+        "ai_researching":  bool(unknown_companies and AI_AVAILABLE),
+        "ai_count":        len(unknown_companies),
+    })
+
+
+@app.route("/api/research-status", methods=["GET"])
+def research_status():
+    """Frontend polls this until status == 'done', then reloads leads."""
+    status = _session.get("research_status", "idle")
+    return jsonify({
+        "ok":     True,
+        "status": status,   # idle | running | done | error | skipped
+        "total":  _session.get("research_total", 0),
+        "done":   _session.get("research_done", 0),
+        "leads":  _session["leads"] if status == "done" else [],
     })
 
 

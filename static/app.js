@@ -57,22 +57,12 @@ function handleFile(file) {
         return;
       }
       allLeads = data.leads;
-      // Restore approved/sent state from queue
-      approvalQueue.forEach(a => {
-        const l = allLeads.find(x => x.id === a.id);
-        if (l) { l.approved = true; }
-      });
-      result.className = 'upload-result ok';
-      result.innerHTML = `
-        ✅ <strong>${data.total} leads loaded and ranked</strong>
-        <div class="result-stats">
-          <div class="stat"><span class="stat-num p1c">${data.p1}</span><span class="stat-lab">Priority 1</span></div>
-          <div class="stat"><span class="stat-num p2c">${data.p2}</span><span class="stat-lab">Priority 2</span></div>
-          <div class="stat"><span class="stat-num puc">${data.unknown}</span><span class="stat-lab">Size unknown</span></div>
-        </div>
-        <button class="btn-goto-leads" onclick="gotoLeads()">View Priority List →</button>
-      `;
-      result.classList.remove('hidden');
+      showUploadResult(data);
+
+      // If AI is researching company sizes in background, show progress bar + poll
+      if (data.ai_researching) {
+        startResearchPolling(data.ai_count);
+      }
     })
     .catch(err => {
       progress.classList.add('hidden');
@@ -80,6 +70,70 @@ function handleFile(file) {
       result.innerHTML = '❌ ' + esc(err.message);
       result.classList.remove('hidden');
     });
+}
+
+function showUploadResult(data) {
+  const result = document.getElementById('uploadResult');
+  result.className = 'upload-result ok';
+  result.innerHTML = `
+    ✅ <strong>${data.total} leads loaded and ranked</strong>
+    <div class="result-stats">
+      <div class="stat"><span class="stat-num p1c">${data.p1}</span><span class="stat-lab">Priority 1</span></div>
+      <div class="stat"><span class="stat-num p2c">${data.p2}</span><span class="stat-lab">Priority 2</span></div>
+      <div class="stat"><span class="stat-num puc">${data.unknown}</span><span class="stat-lab">Size unknown</span></div>
+    </div>
+    ${data.ai_researching
+      ? `<div style="font-size:12px;color:#8b949e;margin-top:8px">🔍 Claude is researching ${data.ai_count} companies — list will auto-update with P1/P2 when done</div>`
+      : ''}
+    <button class="btn-goto-leads" onclick="gotoLeads()">View Priority List →</button>
+  `;
+  result.classList.remove('hidden');
+}
+
+let _researchPollTimer = null;
+
+function startResearchPolling(total) {
+  const bar  = document.getElementById('researchBar');
+  const fill = document.getElementById('researchFill');
+  const sub  = document.getElementById('researchSub');
+  bar.classList.remove('hidden', 'done');
+
+  function poll() {
+    fetch('/api/research-status')
+      .then(r => r.json())
+      .then(d => {
+        const pct = total > 0 ? Math.round((d.done / total) * 100) : 50;
+        fill.style.width = pct + '%';
+        sub.textContent  = `Researched ${d.done} of ${total} companies…`;
+
+        if (d.status === 'done') {
+          // Update leads with re-scored data
+          allLeads = d.leads;
+          bar.classList.add('done');
+          const p1 = allLeads.filter(l => l.priority === 1).length;
+          const p2 = allLeads.filter(l => l.priority === 2).length;
+          const pu = allLeads.filter(l => l.priority === 0).length;
+          fill.style.width = '100%';
+          sub.textContent  = `Done — found sizes for ${d.done} companies`;
+          document.getElementById('uploadResult').innerHTML = `
+            ✅ <strong>${allLeads.length} leads ranked</strong>
+            <div class="result-stats">
+              <div class="stat"><span class="stat-num p1c">${p1}</span><span class="stat-lab">Priority 1</span></div>
+              <div class="stat"><span class="stat-num p2c">${p2}</span><span class="stat-lab">Priority 2</span></div>
+              <div class="stat"><span class="stat-num puc">${pu}</span><span class="stat-lab">Size unknown</span></div>
+            </div>
+            <button class="btn-goto-leads" onclick="gotoLeads()">View Priority List →</button>
+          `;
+          applyFilter();
+        } else if (d.status === 'error') {
+          sub.textContent = 'Research encountered an error — using available data';
+        } else {
+          _researchPollTimer = setTimeout(poll, 3000);
+        }
+      })
+      .catch(() => { _researchPollTimer = setTimeout(poll, 5000); });
+  }
+  poll();
 }
 
 function gotoLeads() {
@@ -150,7 +204,7 @@ function renderLeads() {
         <div class="lead-info">
           <div class="lead-company">${esc(l.company || '—')}</div>
           <div class="lead-name">${esc(l.full_name || '')}${l.job_title ? ' · ' + esc(l.job_title) : ''}</div>
-          <div class="lead-sector">${esc(l.sector_label || 'Sector unknown')}</div>
+          <div class="lead-sector">${esc(l.sector_label || 'Sector unknown')}${l.employees ? ' · ' + l.employees.toLocaleString() + ' employees' : ''}${l.emp_source === 'ai' ? ' 🔍' : ''}</div>
           ${statusTag}
         </div>
       </div>`;
