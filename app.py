@@ -362,77 +362,188 @@ def detect_sector(text):
     return None
 
 
+# ── Built-in company size database (common industrial companies) ──────────────
+# tier: "medium" = 250-5000, "large" = 5000+
+_KNOWN_COMPANIES = {
+    # Large (>5000)
+    "volvo":          {"employees": 100000, "tier": "large",  "note": "Global truck/industrial OEM"},
+    "volvo group":    {"employees": 100000, "tier": "large",  "note": "Global truck/industrial OEM"},
+    "chevron":        {"employees": 45000,  "tier": "large",  "note": "Global energy company"},
+    "nov":            {"employees": 34000,  "tier": "large",  "note": "Oilfield equipment OEM"},
+    "solar turbines": {"employees": 8000,   "tier": "large",  "note": "Gas turbine manufacturer (Caterpillar subsidiary)"},
+    "siemens":        {"employees": 320000, "tier": "large",  "note": "Global industrial conglomerate"},
+    "bosch":          {"employees": 430000, "tier": "large",  "note": "Global automotive/industrial supplier"},
+    "abb":            {"employees": 105000, "tier": "large",  "note": "Power and automation tech"},
+    "danfoss":        {"employees": 42000,  "tier": "large",  "note": "Industrial drives & HVAC"},
+    "nidec":          {"employees": 140000, "tier": "large",  "note": "Electric motor manufacturer"},
+    "honda":          {"employees": 211000, "tier": "large",  "note": "Global automotive OEM"},
+    "toyota":         {"employees": 375000, "tier": "large",  "note": "Global automotive OEM"},
+    "bmw":            {"employees": 149000, "tier": "large",  "note": "Global automotive OEM"},
+    "rivian":         {"employees": 14000,  "tier": "large",  "note": "EV manufacturer"},
+    "xiaomi":         {"employees": 35000,  "tier": "large",  "note": "Consumer electronics / EV"},
+    "ge":             {"employees": 170000, "tier": "large",  "note": "Industrial conglomerate"},
+    "general electric":{"employees": 170000,"tier": "large",  "note": "Industrial conglomerate"},
+    "vestas":         {"employees": 30000,  "tier": "large",  "note": "Wind turbine OEM"},
+    "enercon":        {"employees": 22000,  "tier": "large",  "note": "Wind turbine OEM"},
+    "grundfos":       {"employees": 20000,  "tier": "large",  "note": "Pump manufacturer"},
+    "flowserve":      {"employees": 17000,  "tier": "large",  "note": "Pump and valve OEM"},
+    "parker hannifin":{"employees": 58000,  "tier": "large",  "note": "Motion & control"},
+    "emerson":        {"employees": 88000,  "tier": "large",  "note": "Automation technology"},
+    "honeywell":      {"employees": 99000,  "tier": "large",  "note": "Industrial conglomerate"},
+    "carrier":        {"employees": 55000,  "tier": "large",  "note": "HVAC systems OEM"},
+    "trane":          {"employees": 40000,  "tier": "large",  "note": "HVAC systems"},
+    "daikin":         {"employees": 98000,  "tier": "large",  "note": "HVAC manufacturer"},
+    "dji":            {"employees": 14000,  "tier": "large",  "note": "Consumer/commercial drone OEM"},
+    "agility robotics":{"employees": 1500,  "tier": "medium", "note": "Humanoid robot startup"},
+    "boston dynamics": {"employees": 600,   "tier": "medium", "note": "Robotics company (Hyundai)"},
+    "figure ai":      {"employees": 300,    "tier": "medium", "note": "Humanoid robot startup"},
+    "1x technologies":{"employees": 200,    "tier": "small",  "note": "Humanoid robot startup"},
+    "toyota industries":{"employees": 50000,"tier": "large",  "note": "Forklift / industrial OEM"},
+    "jungheinrich":   {"employees": 20000,  "tier": "large",  "note": "Forklift OEM"},
+    "kion":           {"employees": 43000,  "tier": "large",  "note": "Forklift / warehouse OEM"},
+    "crown equipment":{"employees": 19000,  "tier": "large",  "note": "Forklift manufacturer"},
+    "hyster-yale":    {"employees": 7000,   "tier": "large",  "note": "Forklift OEM"},
+    "raymond":        {"employees": 3000,   "tier": "medium", "note": "Forklift manufacturer"},
+    "logisnext":      {"employees": 10000,  "tier": "large",  "note": "Forklift OEM (Mitsubishi)"},
+    "ola electric":   {"employees": 10000,  "tier": "large",  "note": "E-scooter OEM"},
+    "hero electric":  {"employees": 2000,   "tier": "medium", "note": "E-2 wheeler OEM"},
+    "bajaj":          {"employees": 21000,  "tier": "large",  "note": "2/3-wheeler OEM"},
+    "tvs motor":      {"employees": 9000,   "tier": "large",  "note": "2/3-wheeler OEM"},
+    "cpac":           {"employees": 500,    "tier": "medium", "note": "Industrial controls"},
+    "leistritz":      {"employees": 3000,   "tier": "medium", "note": "Industrial pump/extrusion OEM"},
+}
+
+def _lookup_known(company: str) -> dict | None:
+    """Check built-in database (case-insensitive, fuzzy prefix match)."""
+    key = company.strip().lower()
+    # Exact match first
+    if key in _KNOWN_COMPANIES:
+        return {**_KNOWN_COMPANIES[key], "source": "database"}
+    # Partial match — check if known key is in company name or vice versa
+    for known_key, data in _KNOWN_COMPANIES.items():
+        if known_key in key or key.startswith(known_key[:6]):
+            return {**data, "source": "database"}
+    return None
+
+
+def _lookup_wikipedia(company: str) -> dict | None:
+    """Query Wikipedia infobox for employee count. No API key needed."""
+    import urllib.request as _ureq, urllib.parse as _uparse
+    try:
+        # Search for best matching page
+        search_url = "https://en.wikipedia.org/w/api.php?" + _uparse.urlencode({
+            "action": "query", "list": "search",
+            "srsearch": company + " company",
+            "format": "json", "srlimit": 2,
+        })
+        req = _ureq.Request(search_url, headers={"User-Agent": "FEAAM-Sender/1.0"})
+        with _ureq.urlopen(req, timeout=6) as r:
+            hits = json.loads(r.read()).get("query", {}).get("search", [])
+        if not hits:
+            return None
+        title = hits[0]["title"]
+
+        # Get page wikitext (section 0 = intro + infobox)
+        page_url = "https://en.wikipedia.org/w/api.php?" + _uparse.urlencode({
+            "action": "query", "titles": title, "prop": "revisions",
+            "rvprop": "content", "rvslots": "main",
+            "format": "json", "rvsection": "0",
+        })
+        req2 = _ureq.Request(page_url, headers={"User-Agent": "FEAAM-Sender/1.0"})
+        with _ureq.urlopen(req2, timeout=6) as r:
+            pages = json.loads(r.read()).get("query", {}).get("pages", {})
+        wikitext = (list(pages.values())[0]
+                    .get("revisions", [{}])[0]
+                    .get("slots", {}).get("main", {}).get("*", ""))
+
+        # Extract employee count from infobox
+        m = re.search(r"num_employees\s*=\s*([\d,]+)", wikitext)
+        if m:
+            emp = int(m.group(1).replace(",", ""))
+            tier = "medium" if 250 <= emp <= 5000 else ("large" if emp > 5000 else "small")
+            return {"employees": emp, "tier": tier,
+                    "note": f"Wikipedia: {title}", "source": "wikipedia"}
+    except Exception:
+        pass
+    return None
+
+
 def research_company_size_batch(company_names: list) -> dict:
     """
-    Ask Claude to look up employee counts for a list of companies.
-    Returns {company_name: {"employees": int_or_None, "tier": str, "source": "ai"}}
+    Research employee counts using 3 sources (in order):
+      1. Built-in database  — instant, no network
+      2. Wikipedia API      — free, no key needed
+      3. Claude API         — if Anthropic key is set in Settings (best coverage)
+    Returns {company_name: {"employees": int, "tier": str, "source": str}}
     """
     if not company_names:
         return {}
 
-    ai, err = _get_ai_client()
-    if not ai:
-        print(f"[research] Cannot start: {err}")
-        _session["research_error"] = err
-        return {}
-
-    unique = list({c.strip() for c in company_names if c.strip()})
+    unique  = list({c.strip() for c in company_names if c.strip()})
     results = {}
-    errors  = []
 
-    # Batches of 25
-    for i in range(0, len(unique), 25):
-        batch         = unique[i:i + 25]
-        companies_str = "\n".join(f"- {c}" for c in batch)
+    # ── Pass 1: built-in database ─────────────────────────────────────────────
+    still_unknown = []
+    for company in unique:
+        hit = _lookup_known(company)
+        if hit:
+            results[company] = hit
+            print(f"[research] DB hit: {company} → {hit['employees']} ({hit['tier']})")
+        else:
+            still_unknown.append(company)
+    print(f"[research] Pass 1 (database): {len(results)}/{len(unique)} resolved, "
+          f"{len(still_unknown)} still unknown")
 
-        prompt = f"""You are a business research assistant. For each company listed below, state their approximate current employee headcount based on your knowledge.
+    # ── Pass 2: Wikipedia ─────────────────────────────────────────────────────
+    if still_unknown:
+        wiki_unknown = []
+        for company in still_unknown:
+            hit = _lookup_wikipedia(company)
+            if hit:
+                results[company] = hit
+                print(f"[research] Wiki hit: {company} → {hit['employees']} ({hit['tier']})")
+            else:
+                wiki_unknown.append(company)
+        print(f"[research] Pass 2 (Wikipedia): {len(results)}/{len(unique)} resolved, "
+              f"{len(wiki_unknown)} still unknown")
+        still_unknown = wiki_unknown
+
+    # ── Pass 3: Claude API (if key available) ─────────────────────────────────
+    if still_unknown:
+        ai, err = _get_ai_client()
+        if ai:
+            for i in range(0, len(still_unknown), 25):
+                batch = still_unknown[i:i + 25]
+                companies_str = "\n".join(f"- {c}" for c in batch)
+                prompt = f"""For each company below, give approximate employee headcount.
+Use your training knowledge. Give best estimate even for less-known companies.
 
 Companies:
 {companies_str}
 
-Reply ONLY with a valid JSON object. Map each company name EXACTLY to:
-  "employees": integer estimate (or null if genuinely unknown)
-  "tier": "small" (<250), "medium" (250-5000), "large" (>5000), or "unknown"
-  "note": one short phrase (e.g. "Global pump OEM", "Listed energy company")
+Reply with ONLY a JSON object:
+{{"Company Name": {{"employees": 5000, "tier": "medium", "note": "Industrial OEM"}}}}
+tier = "small"(<250), "medium"(250-5000), "large"(>5000), "unknown"
+Return valid JSON only."""
+                try:
+                    resp = ai.messages.create(
+                        model="claude-haiku-4-5", max_tokens=2048,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    raw  = re.sub(r"^```(?:json)?\s*|\s*```$", "",
+                                  resp.content[0].text.strip())
+                    data = json.loads(raw)
+                    for co, info in data.items():
+                        if info.get("employees") or info.get("tier","unknown") != "unknown":
+                            results[co] = {**info, "source": "ai"}
+                except Exception as e:
+                    print(f"[research] Claude API error: {e}")
+                    _session["research_error"] = str(e)
+            print(f"[research] Pass 3 (Claude): {len(results)}/{len(unique)} resolved")
+        else:
+            print(f"[research] Pass 3 skipped — {err}")
 
-Example:
-{{"Volvo Group": {{"employees": 100000, "tier": "large", "note": "Global truck OEM"}},
- "LEISTRITZ": {{"employees": 3000, "tier": "medium", "note": "German industrial OEM"}}}}
-
-Return JSON only — no markdown, no explanation."""
-
-        try:
-            print(f"[research] Querying Claude for batch {i//25 + 1} ({len(batch)} companies)…")
-            response = ai.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            raw = response.content[0].text.strip()
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-            data = json.loads(raw)
-            for company, info in data.items():
-                if info.get("employees") or info.get("tier") != "unknown":
-                    results[company] = {
-                        "employees": info.get("employees"),
-                        "tier":      info.get("tier", "unknown"),
-                        "note":      info.get("note", ""),
-                        "source":    "ai",
-                    }
-            print(f"[research] Batch {i//25 + 1}: got {len(data)} results")
-        except json.JSONDecodeError as e:
-            err_msg = f"JSON parse error batch {i//25+1}: {e} | Raw: {raw[:200]}"
-            print(f"[research] {err_msg}")
-            errors.append(err_msg)
-        except Exception as e:
-            err_msg = f"API error batch {i//25+1}: {e}"
-            print(f"[research] {err_msg}")
-            errors.append(err_msg)
-
-    if errors:
-        _session["research_error"] = "; ".join(errors[:2])
-    print(f"[research] Complete — {len(results)}/{len(unique)} companies resolved")
+    print(f"[research] Final: {len(results)}/{len(unique)} companies resolved")
     return results
 
 
@@ -809,7 +920,7 @@ def upload():
     # --- Phase 2: kick off background AI research for companies with unknown size ---
     unknown_companies = list({l["company"] for l in leads
                                if l["priority"] == 0 and l["company"]})
-    if unknown_companies and AI_AVAILABLE:
+    if unknown_companies:
         _session["research_status"] = "running"
         _session["research_total"]  = len(unknown_companies)
         _session["research_done"]   = 0
@@ -839,7 +950,7 @@ def upload():
         "p2":              p2,
         "unknown":         pu,
         "leads":           leads,
-        "ai_researching":  bool(unknown_companies and AI_AVAILABLE),
+        "ai_researching":  bool(unknown_companies),
         "ai_count":        len(unknown_companies),
     })
 
