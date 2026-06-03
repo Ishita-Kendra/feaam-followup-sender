@@ -336,7 +336,12 @@ SECTOR_EMAIL_TEMPLATES = {
 SIGNATURE = "Prof. Dr.-Ing. Dieter Gerling\nFounder, FEAAM GmbH"
 
 TOP_N = 25          # How many top-scored leads to show after upload
-UNIQUE_COMPANIES = True  # Show only 1 lead per company (best-scoring contact)
+
+# How many contacts to allow per company based on priority/size:
+#   P1 (medium 250-5000):  up to 2 contacts — different roles worth targeting
+#   P2 (large  5000+):     up to 3 contacts — multiple decision-makers
+#   P0 (unknown):          1 contact only
+MAX_CONTACTS_PER_COMPANY = {1: 2, 2: 3, 0: 1}
 
 EXEC_KEYWORDS = {
     "president","ceo","cto","cfo","coo","cso","chief","founder","owner",
@@ -1091,16 +1096,18 @@ def _build_leads(df, preserve_ids=None):
     priority_order = {1: 0, 2: 1, 0: 2}
     leads.sort(key=lambda x: (priority_order[x["priority"]], -x["score"]))
 
-    # Deduplicate by company — keep only the highest-scoring contact per company
-    if UNIQUE_COMPANIES:
-        seen_companies = {}
-        deduped = []
-        for lead in leads:
-            co_key = lead["company"].strip().lower()
-            if co_key not in seen_companies:
-                seen_companies[co_key] = True
-                deduped.append(lead)
-        leads = deduped
+    # Smart dedup — allow multiple contacts for important companies
+    # P2 (large): up to 3 contacts | P1 (medium): up to 2 | Unknown: 1
+    company_counts = {}
+    deduped = []
+    for lead in leads:
+        co_key  = lead["company"].strip().lower()
+        limit   = MAX_CONTACTS_PER_COMPANY.get(lead["priority"], 1)
+        current = company_counts.get(co_key, 0)
+        if current < limit:
+            company_counts[co_key] = current + 1
+            deduped.append(lead)
+    leads = deduped
 
     return leads[:TOP_N]
 
