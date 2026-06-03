@@ -278,16 +278,24 @@ function selectLead(id) {
   document.querySelectorAll('.lead-card').forEach(c =>
     c.classList.toggle('selected', c.dataset.id === id));
 
-  const placeholder = document.getElementById('readPlaceholder');
-  const content     = document.getElementById('readContent');
-  placeholder.classList.add('hidden');
-  content.classList.remove('hidden');
+  document.getElementById('readPlaceholder').classList.add('hidden');
+  document.getElementById('readContent').classList.remove('hidden');
 
   const l = selectedLead;
+
+  // Research badge — declared FIRST so it can be used below
+  const rs = l.research_status || 'pending';
+  const researchBadge = rs === 'done'
+    ? `<span class="research-badge done">✓ Research complete</span>`
+    : rs === 'researching'
+      ? `<span class="research-badge running">⟳ Researching…</span>`
+      : `<span class="research-badge pending">· Pending</span>`;
+
   const badgeCls = l.priority === 1 ? 'p1' : l.priority === 2 ? 'p2' : 'pu';
-  const badgeTxt = l.priority === 1 ? 'Priority 1 — Medium company' :
-                   l.priority === 2 ? 'Priority 2 — Large company' :
-                   'Size unknown';
+  const badgeTxt = l.priority === 1 ? 'Priority 1 — Medium' :
+                   l.priority === 2 ? 'Priority 2 — Large' : 'Size unknown';
+
+  const empText = l.employees ? ` · ${l.employees.toLocaleString()} employees` : '';
 
   // Contact header
   document.getElementById('readContact').innerHTML = `
@@ -295,8 +303,8 @@ function selectLead(id) {
       <div class="contact-name">${esc(l.full_name || '—')}</div>
       <div class="contact-meta">
         ${esc(l.job_title || 'Unknown title')}
-        ${l.location ? ' &nbsp;·&nbsp; ' + esc(l.location) : ''}
-        ${l.company  ? ' &nbsp;·&nbsp; ' + esc(l.company)  : ''}
+        ${l.location ? ' · ' + esc(l.location) : ''}
+        ${l.company  ? ' · ' + esc(l.company)  : ''}${empText}
       </div>
       <div class="contact-email-link">${esc(l.email || 'No email address')}</div>
       <div class="contact-badges">
@@ -309,29 +317,20 @@ function selectLead(id) {
     </div>
   `;
 
-  // Email preview fields
+  // Email preview
   document.getElementById('previewTo').textContent      = `${l.full_name || ''} <${l.email || ''}>`;
   document.getElementById('previewSubject').textContent = l.subject || '';
+  document.getElementById('previewBody').textContent    = l.body || '';
 
-  // Attachment — shown prominently
+  // Attachment chip — shown prominently
   const attachEl = document.getElementById('previewAttachment');
   if (l.deck_fname) {
     attachEl.innerHTML = l.deck_exists
       ? `<span class="attach-chip ok">📎 ${esc(l.deck_fname)}</span>`
-      : `<span class="attach-chip missing">📎 ${esc(l.deck_fname)} <span class="attach-warn">⚠ file not found</span></span>`;
+      : `<span class="attach-chip missing">📎 ${esc(l.deck_fname)} ⚠ not found</span>`;
   } else {
-    attachEl.innerHTML = '<span class="attach-chip missing">No deck matched for this sector</span>';
+    attachEl.innerHTML = '<span class="attach-chip missing">No deck matched</span>';
   }
-
-  // Research status in read panel
-  const rs = l.research_status || 'pending';
-  const researchBadge = rs === 'done'
-    ? `<span class="research-badge done">✓ Research complete</span>`
-    : rs === 'researching'
-      ? `<span class="research-badge running">⟳ Researching now…</span>`
-      : `<span class="research-badge pending">Pending research</span>`;
-
-  document.getElementById('previewBody').textContent = l.body || '';
 
   // Case studies
   const csList = document.getElementById('csPreviewList');
