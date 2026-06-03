@@ -335,7 +335,8 @@ SECTOR_EMAIL_TEMPLATES = {
 
 SIGNATURE = "Prof. Dr.-Ing. Dieter Gerling\nFounder, FEAAM GmbH"
 
-TOP_N = 25   # How many top-scored leads to keep after upload
+TOP_N = 25          # How many top-scored leads to show after upload
+UNIQUE_COMPANIES = True  # Show only 1 lead per company (best-scoring contact)
 
 EXEC_KEYWORDS = {
     "president","ceo","cto","cfo","coo","cso","chief","founder","owner",
@@ -411,21 +412,81 @@ _KNOWN_COMPANIES = {
     "hero electric":  {"employees": 2000,   "tier": "medium", "note": "E-2 wheeler OEM"},
     "bajaj":          {"employees": 21000,  "tier": "large",  "note": "2/3-wheeler OEM"},
     "tvs motor":      {"employees": 9000,   "tier": "large",  "note": "2/3-wheeler OEM"},
-    "cpac":           {"employees": 500,    "tier": "medium", "note": "Industrial controls"},
-    "leistritz":      {"employees": 3000,   "tier": "medium", "note": "Industrial pump/extrusion OEM"},
+    "cpac":              {"employees": 500,    "tier": "medium", "note": "Industrial controls"},
+    "leistritz":         {"employees": 3000,  "tier": "medium", "note": "Industrial pump/extrusion OEM"},
+    # Oil & gas / industrial pump sector
+    "nov":               {"employees": 34000, "tier": "large",  "note": "Oilfield equipment OEM", "sector_hint": "pump"},
+    "national oilwell":  {"employees": 34000, "tier": "large",  "note": "Oilfield equipment OEM", "sector_hint": "pump"},
+    "baker hughes":      {"employees": 54000, "tier": "large",  "note": "Oilfield services", "sector_hint": "pump"},
+    "schlumberger":      {"employees": 98000, "tier": "large",  "note": "Oilfield services", "sector_hint": "pump"},
+    "slb":               {"employees": 98000, "tier": "large",  "note": "Oilfield services (SLB)", "sector_hint": "pump"},
+    "halliburton":       {"employees": 48000, "tier": "large",  "note": "Oilfield services", "sector_hint": "pump"},
+    "weatherford":       {"employees": 17000, "tier": "large",  "note": "Oilfield equipment", "sector_hint": "pump"},
+    "solar turbines":    {"employees": 8000,  "tier": "large",  "note": "Gas turbine manufacturer (Caterpillar)", "sector_hint": "pump"},
+    "gardner denver":    {"employees": 7000,  "tier": "large",  "note": "Industrial compressors/pumps", "sector_hint": "pump"},
+    "sulzer":            {"employees": 14000, "tier": "large",  "note": "Pump & rotating equipment OEM", "sector_hint": "pump"},
+    "xylem":             {"employees": 21000, "tier": "large",  "note": "Water technology / pumps", "sector_hint": "pump"},
+    "ebara":             {"employees": 13000, "tier": "large",  "note": "Pump manufacturer", "sector_hint": "pump"},
+    "itt":               {"employees": 10000, "tier": "large",  "note": "Industrial pumps & motion", "sector_hint": "pump"},
+    "gorman rupp":       {"employees": 1700,  "tier": "medium", "note": "Industrial pump OEM", "sector_hint": "pump"},
+    "pentair":           {"employees": 11000, "tier": "large",  "note": "Water treatment / pumps", "sector_hint": "pump"},
+    "wilo":              {"employees": 9000,  "tier": "large",  "note": "Pump manufacturer", "sector_hint": "pump"},
+    "ksb":               {"employees": 15000, "tier": "large",  "note": "Pump and valve OEM", "sector_hint": "pump"},
+    "chevron":           {"employees": 45000, "tier": "large",  "note": "Global energy company (oil & gas)", "sector_hint": "pump"},
+    "exxon":             {"employees": 62000, "tier": "large",  "note": "Global energy company", "sector_hint": "pump"},
+    "exxonmobil":        {"employees": 62000, "tier": "large",  "note": "Global energy company", "sector_hint": "pump"},
+    "shell":             {"employees": 93000, "tier": "large",  "note": "Global energy company", "sector_hint": "pump"},
+    "bp":                {"employees": 67000, "tier": "large",  "note": "Global energy company", "sector_hint": "pump"},
+    "totalenergies":     {"employees": 101000,"tier": "large",  "note": "Global energy company", "sector_hint": "pump"},
+    "magvar":            {"employees": 200,   "tier": "small",  "note": "Magnetic variance / navigation tech", "sector_hint": "forklift"},
 }
 
 def _lookup_known(company: str) -> dict | None:
     """Check built-in database (case-insensitive, fuzzy prefix match)."""
     key = company.strip().lower()
-    # Exact match first
     if key in _KNOWN_COMPANIES:
         return {**_KNOWN_COMPANIES[key], "source": "database"}
-    # Partial match — check if known key is in company name or vice versa
     for known_key, data in _KNOWN_COMPANIES.items():
         if known_key in key or key.startswith(known_key[:6]):
             return {**data, "source": "database"}
     return None
+
+
+# Built-in FEAAM fit descriptions per sector (used when Claude API not available)
+_SECTOR_FEAAM_FIT = {
+    "pump": (
+        "Electric submersible and high-pressure pump drives require sustained high torque under continuous duty and reliable operation in harsh environments. "
+        "FEAAM's patented stator flux barrier motor architecture improves torque density and efficiency while reducing rare-earth magnet mass — directly reducing BOM cost and supply-chain exposure for pump drive systems."
+    ),
+    "forklift": (
+        "Electric forklift drives demand high torque at near-zero speed, thermal robustness under intermittent loading, and competitive BOM cost. "
+        "FEAAM's patented stator flux barrier motor architecture delivers higher torque density under identical geometrical constraints, with reduced rare-earth magnet mass — a direct cost and performance advantage for material handling OEMs."
+    ),
+    "humanoid_robot": (
+        "Humanoid robot platforms require 20–100 compact, high-torque-density motors per unit, with minimal rare-earth dependency at scale. "
+        "FEAAM's patented stator flux barrier motor architecture achieves higher torque density in a smaller package — reducing rare-earth magnet mass without compromising performance, critical for viable humanoid robot economics."
+    ),
+    "drone": (
+        "Drone and UAV propulsion requires maximum power-to-weight ratio and precise torque linearity in a compact form factor. "
+        "FEAAM's stator flux barrier architecture delivers higher torque density while reducing rare-earth magnet mass — directly improving flight time and reducing supply-chain risk as production volumes scale."
+    ),
+    "2_3_wheeler": (
+        "Electric 2 and 3-wheeler powertrains face intense cost pressure and growing rare-earth supply risk as volumes scale exponentially. "
+        "FEAAM's patented stator flux barrier motor architecture reduces rare-earth magnet mass while maintaining torque density — a direct BOM cost reduction lever for volume e-mobility manufacturers."
+    ),
+    "hvac": (
+        "HVAC drive systems require high efficiency across a wide speed range and long service life with low maintenance exposure. "
+        "FEAAM's stator flux barrier motor architecture improves part-load efficiency and reduces cogging torque — translating to lower energy consumption and quieter operation in HVAC applications."
+    ),
+    "wind": (
+        "Wind energy generators face significant rare-earth supply exposure at scale and increasing demand for magnet-free alternatives. "
+        "FEAAM offers both reduced-magnet flux barrier and fully magnet-free synchronous machine architectures — providing supply-chain independence while maintaining power density equivalent to conventional PM designs."
+    ),
+    "gaming_ffb": (
+        "Force feedback and direct-drive simulation systems require exceptional torque linearity, minimal cogging torque, and high bandwidth. "
+        "FEAAM's stator flux barrier motor architecture reduces cogging and improves torque density in a compact design — directly improving haptic fidelity and dynamic response for professional simulation products."
+    ),
+}
 
 
 def _lookup_wikipedia(company: str) -> dict | None:
@@ -617,7 +678,22 @@ Return ONLY valid JSON. Be factual — if you don't know the company well, say s
         except Exception as e:
             print(f"[deep_research] Claude error for {company}: {e}")
 
-    # Finalise tier from employee count if still unknown
+    # ── Pass 4: Built-in FEAAM fit text (fallback when no Claude API) ────────
+    if not result.get("feaam_fit"):
+        # Use sector hint from DB, or the passed sector argument
+        effective_sector = result.get("sector_hint") or sector or ""
+        fit_text = _SECTOR_FEAAM_FIT.get(effective_sector, "")
+        if not fit_text and result.get("description"):
+            # Generic fit based on description
+            fit_text = (
+                f"FEAAM's patented stator flux barrier motor architecture — which reduces "
+                f"rare-earth magnet mass while improving torque density and efficiency — "
+                f"is applicable to {company}'s electric drive systems, offering BOM cost "
+                f"reduction and supply-chain de-risking."
+            )
+        result["feaam_fit"] = fit_text
+
+    # ── Finalise tier from employee count ─────────────────────────────────────
     if result["tier"] == "unknown" and result["employees"]:
         emp = result["employees"]
         result["tier"] = "medium" if 250 <= emp <= 5000 else ("large" if emp > 5000 else "small")
@@ -665,15 +741,20 @@ def score_lead(row_dict):
 
     # --- Sector ---
     sector = None
-    for k in ("matched_sector", "sector", "industry", "business_type", "segment"):
-        v = row_dict.get(k) or row_dict.get(k.replace("_", " ")) or row_dict.get(k.title())
-        if v:
-            s = detect_sector(str(v))
-            if s:
-                sector = s
-                break
+    # First check built-in DB for sector_hint (most reliable)
+    db = _lookup_known(row_dict.get("company", ""))
+    if db and db.get("sector_hint"):
+        sector = db["sector_hint"]
+
     if not sector:
-        # Try company name + job title
+        for k in ("matched_sector", "sector", "industry", "business_type", "segment"):
+            v = row_dict.get(k) or row_dict.get(k.replace("_", " ")) or row_dict.get(k.title())
+            if v:
+                s = detect_sector(str(v))
+                if s:
+                    sector = s
+                    break
+    if not sector:
         combined = " ".join([
             str(row_dict.get("company", "")),
             str(row_dict.get("job_title", "")),
@@ -1009,6 +1090,18 @@ def _build_leads(df, preserve_ids=None):
         })
     priority_order = {1: 0, 2: 1, 0: 2}
     leads.sort(key=lambda x: (priority_order[x["priority"]], -x["score"]))
+
+    # Deduplicate by company — keep only the highest-scoring contact per company
+    if UNIQUE_COMPANIES:
+        seen_companies = {}
+        deduped = []
+        for lead in leads:
+            co_key = lead["company"].strip().lower()
+            if co_key not in seen_companies:
+                seen_companies[co_key] = True
+                deduped.append(lead)
+        leads = deduped
+
     return leads[:TOP_N]
 
 
@@ -1091,7 +1184,21 @@ def upload():
                         lead[k] = info[k]
                 lead["emp_source"] = info.get("source", "")
 
-                # Regenerate personalised email now that we have research data
+                # If DB gave a sector hint and current sector is unknown, update it
+                sector_hint = info.get("sector_hint")
+                if sector_hint and (not lead.get("sector")):
+                    lead["sector"]       = sector_hint
+                    lead["sector_label"] = SECTOR_LABELS.get(sector_hint, sector_hint)
+                    # Update attachment to match new sector
+                    deck_path, deck_fname = get_deck_path(sector_hint)
+                    lead["deck_fname"]  = deck_fname
+                    lead["deck_exists"] = deck_path is not None
+                    lead["suggested_cs"] = [
+                        {"label": CASE_STUDIES[i][0], "filename": CASE_STUDIES[i][1]}
+                        for i in SECTOR_CASE_STUDY_MAP.get(sector_hint, [])
+                    ]
+
+                # Regenerate personalised email with all research data
                 new_subj, new_body = generate_email(lead)
                 lead["subject"] = new_subj
                 lead["body"]    = new_body
