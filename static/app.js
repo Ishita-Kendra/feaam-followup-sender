@@ -523,135 +523,117 @@ document.getElementById('btnConfirmSend').addEventListener('click', () => {
 function loadLibrary() {
   fetch('/api/library').then(r => r.json()).then(data => {
     if (!data.ok) return;
-    renderDecks(data.decks);
-    renderCaseStudies(data.case_studies);
-    renderBriefings(data.briefings);
+    renderTier('libOverall',   data.overall,   'overall');
+    renderTier('libFollowup1', data.followup1, 'followup1', true);
+    renderTier('libFollowup2', data.followup2, 'followup2', true);
   });
 }
 
-function renderDecks(decks) {
-  document.getElementById('libDecks').innerHTML = decks.map(d => `
-    <div class="lib-card ${d.exists ? 'ok' : 'missing'}">
-      <div class="lib-card-title">
-        <span class="lib-status-dot ${d.exists ? 'ok' : 'missing'}"></span>
-        ${esc(d.sector_label)}
-      </div>
-      <div class="lib-card-sub">${esc(d.filename)}</div>
-      <div class="lib-card-meta">
-        ${d.exists ? `${d.size_kb} KB · updated ${esc(d.modified)}` : '⚠ File not uploaded yet'}
-      </div>
-      <div class="lib-card-actions">
-        <label class="lib-btn-replace">
-          ${d.exists ? '↑ Replace' : '↑ Upload'}
-          <input type="file" accept=".pptx,.pdf" onchange="uploadDeck('${esc(d.sector_key)}', this)"/>
-        </label>
-        ${d.exists ? `<a class="lib-btn-download" href="/api/library/download/decks/${encodeURIComponent(d.filename)}" download>↓ Download</a>` : ''}
-      </div>
-    </div>`).join('');
-}
-
-function renderCaseStudies(cs) {
-  document.getElementById('libCaseStudies').innerHTML = cs.map((c, i) => `
-    <div class="lib-card ${c.exists ? 'ok' : 'missing'}">
-      <div class="lib-card-title">
-        <span class="lib-status-dot ${c.exists ? 'ok' : 'missing'}"></span>
-        ${esc(c.label)}
-      </div>
-      <div class="lib-card-sub" style="font-size:10px">${esc(c.filename)}</div>
-      <div class="lib-card-meta">
-        ${c.exists ? `${c.size_kb} KB · updated ${esc(c.modified)}` : '⚠ File not uploaded yet'}
-      </div>
-      <div class="lib-card-actions">
-        <label class="lib-btn-replace">
-          ${c.exists ? '↑ Replace' : '↑ Upload'}
-          <input type="file" accept=".pdf" onchange="uploadCaseStudy(${i}, this)"/>
-        </label>
-        ${c.exists ? `<a class="lib-btn-download" href="/api/library/download/case_studies/${encodeURIComponent(c.filename)}" download>↓ Download</a>` : ''}
-      </div>
-    </div>`).join('');
-}
-
-function renderBriefings(briefings) {
-  const container = document.getElementById('libBriefings');
-  if (!briefings.length) {
-    container.innerHTML = '<div class="lib-loading">No briefing documents uploaded yet.</div>';
+function renderTier(containerId, files, tier, hasFixed = false) {
+  const container = document.getElementById(containerId);
+  if (!files || !files.length) {
+    container.innerHTML = '<div class="lib-loading">No files uploaded yet.</div>';
     return;
   }
-  container.innerHTML = briefings.map(b => `
-    <div class="lib-card ${b.exists ? 'ok' : 'missing'}">
+  container.innerHTML = files.map((f, i) => {
+    const replaceUrl = f.fixed && f.sector_key
+      ? `/api/library/followup1/deck/${f.sector_key}`
+      : f.fixed && tier === 'followup2'
+        ? `/api/library/followup2/case-study/${i}`
+        : null;
+
+    return `
+    <div class="lib-card ${f.exists ? 'ok' : 'missing'}">
       <div class="lib-card-title">
-        <span class="lib-status-dot ${b.exists ? 'ok' : 'missing'}"></span>
-        ${esc(b.label)}
+        <span class="lib-status-dot ${f.exists ? 'ok' : 'missing'}"></span>
+        ${esc(f.label || f.filename)}
       </div>
-      ${b.description ? `<div class="lib-card-sub">${esc(b.description)}</div>` : ''}
+      ${f.description ? `<div class="lib-card-sub">${esc(f.description)}</div>` : ''}
       <div class="lib-card-meta">
-        ${b.exists ? `${b.size_kb} KB · uploaded ${esc(b.uploaded_at)}` : '⚠ File missing'}
+        ${f.exists
+          ? `${f.size_kb} KB &nbsp;·&nbsp; updated ${esc(f.modified)}`
+          : '⚠ Not uploaded yet'}
       </div>
       <div class="lib-card-actions">
-        ${b.exists ? `<a class="lib-btn-download" href="/api/library/download/briefings/${encodeURIComponent(b.filename)}" download>↓ Download</a>` : ''}
-        <button class="lib-btn-delete" onclick="deleteBriefing('${esc(b.filename)}')">✕ Remove</button>
+        <label class="lib-btn-replace">
+          ${f.exists ? '↑ Replace' : '↑ Upload'}
+          <input type="file" accept=".pdf,.pptx,.docx,.txt"
+            onchange="replaceLibraryFile('${tier}', '${esc(f.filename)}', '${esc(f.sector_key||'')}', ${i}, this, ${!!f.fixed})"/>
+        </label>
+        ${f.exists
+          ? `<a class="lib-btn-download" href="/api/library/download/${tier}/${encodeURIComponent(f.filename)}" download>↓ Get</a>`
+          : ''}
+        ${!f.fixed
+          ? `<button class="lib-btn-delete" onclick="deleteLibraryFile('${tier}','${esc(f.filename)}')">✕</button>`
+          : ''}
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
-function uploadDeck(sectorKey, input) {
+function replaceLibraryFile(tier, fname, sectorKey, index, input, isFixed) {
   const file = input.files[0];
   if (!file) return;
   const fd = new FormData();
   fd.append('file', file);
-  fetch(`/api/library/deck/${sectorKey}`, { method: 'POST', body: fd })
+  let url;
+  if (isFixed && sectorKey) url = `/api/library/followup1/deck/${sectorKey}`;
+  else if (isFixed && tier === 'followup2') url = `/api/library/followup2/case-study/${index}`;
+  else url = `/api/library/${tier}/upload`;
+  if (!isFixed) { fd.append('label', fname); }
+  fetch(url, { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => { if (d.ok) loadLibrary(); });
+}
+
+function deleteLibraryFile(tier, filename) {
+  if (!confirm(`Remove "${filename}"?`)) return;
+  fetch(`/api/library/${tier}/delete/${encodeURIComponent(filename)}`, { method: 'DELETE' })
     .then(r => r.json()).then(d => { if (d.ok) loadLibrary(); });
 }
 
-function uploadCaseStudy(index, input) {
-  const file = input.files[0];
-  if (!file) return;
-  const fd = new FormData();
-  fd.append('file', file);
-  fetch(`/api/library/case-study/${index}`, { method: 'POST', body: fd })
-    .then(r => r.json()).then(d => { if (d.ok) loadLibrary(); });
-}
-
-function deleteBriefing(filename) {
-  if (!confirm(`Remove "${filename}" from the library?`)) return;
-  fetch(`/api/library/briefing/${encodeURIComponent(filename)}`, { method: 'DELETE' })
-    .then(r => r.json()).then(d => { if (d.ok) loadLibrary(); });
-}
-
-// Briefing upload
-document.getElementById('briefingFile').addEventListener('change', e => {
-  document.getElementById('briefingFileName').textContent =
-    e.target.files[0] ? e.target.files[0].name : 'No file chosen';
+// Upload new file to any tier
+['overall','followup1','followup2'].forEach(tier => {
+  const fileInput = document.getElementById(`file${tier.charAt(0).toUpperCase()+tier.slice(1)}`);
+  const fnameEl   = document.getElementById(`fname${tier.charAt(0).toUpperCase()+tier.slice(1)}`);
+  if (fileInput) {
+    fileInput.addEventListener('change', e => {
+      fnameEl.textContent = e.target.files[0] ? e.target.files[0].name : 'No file chosen';
+    });
+  }
 });
 
-document.getElementById('btnUploadBriefing').addEventListener('click', () => {
-  const file  = document.getElementById('briefingFile').files[0];
-  const label = document.getElementById('briefingLabel').value.trim();
-  const desc  = document.getElementById('briefingDesc').value.trim();
-  const res   = document.getElementById('briefingUploadResult');
-  if (!file) {
-    res.className = 'briefing-upload-result err'; res.textContent = 'Please choose a file first.';
-    res.classList.remove('hidden'); return;
-  }
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('label', label || file.name);
-  fd.append('description', desc);
-  fetch('/api/library/briefing', { method: 'POST', body: fd })
-    .then(r => r.json())
-    .then(d => {
-      res.className = 'briefing-upload-result ' + (d.ok ? 'ok' : 'err');
-      res.textContent = d.ok ? '✓ ' + d.message : '❌ ' + d.error;
-      res.classList.remove('hidden');
-      if (d.ok) {
-        document.getElementById('briefingFile').value = '';
-        document.getElementById('briefingFileName').textContent = 'No file chosen';
-        document.getElementById('briefingLabel').value = '';
-        document.getElementById('briefingDesc').value  = '';
-        loadLibrary();
-      }
-      setTimeout(() => res.classList.add('hidden'), 4000);
-    });
+document.querySelectorAll('.lib-upload-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tier   = btn.dataset.tier;
+    const cap    = tier.charAt(0).toUpperCase() + tier.slice(1);
+    const file   = document.getElementById(`file${cap}`).files[0];
+    const label  = document.getElementById(`label${cap}`).value.trim();
+    const result = document.getElementById(`result${cap}`);
+    if (!file) {
+      result.className = 'lib-upload-result err';
+      result.textContent = 'Choose a file first';
+      result.classList.remove('hidden');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('label', label || file.name);
+    fetch(`/api/library/${tier}/upload`, { method: 'POST', body: fd })
+      .then(r => r.json())
+      .then(d => {
+        result.className = 'lib-upload-result ' + (d.ok ? 'ok' : 'err');
+        result.textContent = d.ok ? '✓ Uploaded' : '❌ ' + d.error;
+        result.classList.remove('hidden');
+        if (d.ok) {
+          document.getElementById(`file${cap}`).value = '';
+          document.getElementById(`fname${cap}`).textContent = 'No file chosen';
+          document.getElementById(`label${cap}`).value = '';
+          loadLibrary();
+        }
+        setTimeout(() => result.classList.add('hidden'), 4000);
+      });
+  });
 });
 
 // ── Sent log ───────────────────────────────────────────────────

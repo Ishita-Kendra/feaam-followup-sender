@@ -41,35 +41,68 @@ SENT_LOG_PATH = os.path.join(BASE_DIR, "sent_log.json")
 IS_CLOUD = os.getenv("RENDER") == "true" or os.getenv("IS_CLOUD") == "true"
 
 # ── Reference library dirs ────────────────────────────────────────────────────
-# All dirs use the app's own "library" folder so files persist locally
-# and are uploaded by the user on Render via the Reference Materials tab.
+# Three tiers — Claude reads all of them when generating emails.
+#
+#  overall/    → FEAAM company docs, tone/style guides, correction notes
+#                Claude uses these as base context for EVERY email
+#
+#  followup1/  → Add-value content (sector decks, PPTX)
+#                Claude generates Follow-up 1 emails around these + attaches them
+#
+#  followup2/  → Deeper content (case studies, technical papers, PDFs)
+#                Claude generates Follow-up 2 emails around these + attaches them
+#
+# Files persist until manually replaced or deleted via the Library tab.
+
 LIBRARY_DIR       = os.path.join(BASE_DIR, "library")
-DECK_DIR          = os.path.join(LIBRARY_DIR, "decks")
-CASE_STUDY_DIR    = os.path.join(LIBRARY_DIR, "case_studies")
-BRIEFING_DIR      = os.path.join(LIBRARY_DIR, "briefings")
+OVERALL_DIR       = os.path.join(LIBRARY_DIR, "overall")      # tier 1
+FOLLOWUP1_DIR     = os.path.join(LIBRARY_DIR, "followup1")    # tier 2
+FOLLOWUP2_DIR     = os.path.join(LIBRARY_DIR, "followup2")    # tier 3
 LIBRARY_META_PATH = os.path.join(LIBRARY_DIR, "meta.json")
 
-for _d in (LIBRARY_DIR, DECK_DIR, CASE_STUDY_DIR, BRIEFING_DIR):
+# Legacy aliases so existing send logic still works
+DECK_DIR       = FOLLOWUP1_DIR
+CASE_STUDY_DIR = FOLLOWUP2_DIR
+
+for _d in (LIBRARY_DIR, OVERALL_DIR, FOLLOWUP1_DIR, FOLLOWUP2_DIR):
     os.makedirs(_d, exist_ok=True)
 
 # On first run (local), symlink / copy existing local files into the library
 def _seed_local_files():
-    """Copy existing local files into the library on first run."""
+    """Copy existing local files into the library tiers on first run."""
     import shutil
+
+    # Follow-up 1 — sector decks
     local_deck_src = r"C:\Users\mypc\Downloads"
-    local_cs_src   = r"C:\Users\mypc\OneDrive\Desktop\New folder\CASE STUDIES"
-    for fname in [v for v in SECTOR_DECKS.values()]:
+    for fname in SECTOR_DECKS.values():
         src = os.path.join(local_deck_src, fname)
-        dst = os.path.join(DECK_DIR, fname)
+        dst = os.path.join(FOLLOWUP1_DIR, fname)
         if os.path.exists(src) and not os.path.exists(dst):
             try: shutil.copy2(src, dst)
             except Exception: pass
+
+    # Follow-up 2 — case studies
+    local_cs_src = r"C:\Users\mypc\OneDrive\Desktop\New folder\CASE STUDIES"
     for _, fname in CASE_STUDIES:
         src = os.path.join(local_cs_src, fname)
-        dst = os.path.join(CASE_STUDY_DIR, fname)
+        dst = os.path.join(FOLLOWUP2_DIR, fname)
         if os.path.exists(src) and not os.path.exists(dst):
             try: shutil.copy2(src, dst)
             except Exception: pass
+
+    # Overall reference — seed known briefing docs
+    overall_sources = [
+        r"C:\Users\mypc\OneDrive\Desktop\CLAUDE\feaam-matcher\reference_files\FEAAM_Technology.pdf",
+        r"C:\Users\mypc\Downloads\Future Growth Plan FEAAM (1).pptx",
+        r"C:\Users\mypc\OneDrive\Desktop\New folder\Christian's Remark.pdf",
+        r"C:\Users\mypc\OneDrive\Desktop\New folder\Ebru's Feedback (Per mail).docx",
+    ]
+    for src in overall_sources:
+        if os.path.exists(src):
+            dst = os.path.join(OVERALL_DIR, os.path.basename(src))
+            if not os.path.exists(dst):
+                try: shutil.copy2(src, dst)
+                except Exception: pass
 
 # ── Sector → deck filename mapping ────────────────────────────────────────────
 SECTOR_DECKS = {
@@ -505,12 +538,87 @@ def load_library_meta():
     if os.path.exists(LIBRARY_META_PATH):
         with open(LIBRARY_META_PATH) as f:
             return json.load(f)
-    return {"briefings": []}
+    return {"overall": [], "followup1": [], "followup2": []}
 
 
 def save_library_meta(meta):
     with open(LIBRARY_META_PATH, "w") as f:
         json.dump(meta, f, indent=2)
+
+
+def list_tier_files(tier_dir, meta_list):
+    """Return list of file info dicts for a tier directory."""
+    files = []
+    # Files from meta (user-uploaded with labels)
+    meta_fnames = {m["filename"] for m in meta_list}
+    for m in meta_list:
+        path = os.path.join(tier_dir, m["filename"])
+        info = file_info(path, m["filename"])
+        info["label"]       = m.get("label", m["filename"])
+        info["description"] = m.get("description", "")
+        info["uploaded_at"] = m.get("uploaded_at", "")
+        files.append(info)
+    # Also pick up any files present on disk that aren't in meta yet
+    if os.path.isdir(tier_dir):
+        for fname in sorted(os.listdir(tier_dir)):
+            if fname not in meta_fnames and not fname.startswith("."):
+                path = os.path.join(tier_dir, fname)
+                if os.path.isfile(path):
+                    info = file_info(path, fname)
+                    info["label"]       = fname
+                    info["description"] = ""
+                    info["uploaded_at"] = info["modified"]
+                    files.append(info)
+    return files
+
+
+def _read_text_from_file(path):
+    """Extract plain text from PDF, DOCX, or PPTX for Claude context."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf":
+            import fitz
+            doc  = fitz.open(path)
+            text = "\n".join(p.get_text() for p in doc)
+            doc.close()
+            return text[:8000]
+        elif ext == ".docx":
+            from docx import Document
+            doc = Document(path)
+            return "\n".join(p.text for p in doc.paragraphs)[:8000]
+        elif ext == ".pptx":
+            from pptx import Presentation
+            prs  = Presentation(path)
+            text = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        text.append(shape.text.strip())
+            return "\n".join(text)[:8000]
+    except Exception as e:
+        return f"[Could not read {os.path.basename(path)}: {e}]"
+    return ""
+
+
+def build_reference_context(tier="overall"):
+    """
+    Read all files in a library tier and return combined text for Claude.
+    tier: 'overall' | 'followup1' | 'followup2'
+    """
+    dirs  = {"overall": OVERALL_DIR, "followup1": FOLLOWUP1_DIR, "followup2": FOLLOWUP2_DIR}
+    folder = dirs.get(tier, OVERALL_DIR)
+    if not os.path.isdir(folder):
+        return ""
+    parts = []
+    for fname in sorted(os.listdir(folder)):
+        if fname.startswith("."):
+            continue
+        path = os.path.join(folder, fname)
+        if os.path.isfile(path):
+            text = _read_text_from_file(path)
+            if text:
+                parts.append(f"=== {fname} ===\n{text}")
+    return "\n\n".join(parts)
 
 
 def file_info(path, fname):
@@ -882,115 +990,138 @@ def list_case_studies():
 
 @app.route("/api/library", methods=["GET"])
 def get_library():
-    """Return full library status — decks, case studies, briefings."""
-    # Sector decks
-    decks = []
+    """Return full 3-tier library."""
+    meta = load_library_meta()
+
+    # Tier 1 — Overall Reference
+    overall   = list_tier_files(OVERALL_DIR,   meta.get("overall",   []))
+
+    # Tier 2 — Follow-up 1 (sector decks — fixed slots + free uploads)
+    fu1_fixed = []
     for sector_key, fname in SECTOR_DECKS.items():
-        path = os.path.join(DECK_DIR, fname)
+        path = os.path.join(FOLLOWUP1_DIR, fname)
         info = file_info(path, fname)
         info["sector_key"]   = sector_key
         info["sector_label"] = SECTOR_LABELS.get(sector_key, sector_key)
-        decks.append(info)
+        info["label"]        = SECTOR_LABELS.get(sector_key, fname)
+        info["fixed"]        = True
+        fu1_fixed.append(info)
+    fu1_extra = [f for f in list_tier_files(FOLLOWUP1_DIR, meta.get("followup1", []))
+                 if f["filename"] not in SECTOR_DECKS.values()]
+    followup1 = fu1_fixed + fu1_extra
 
-    # Case studies
-    case_studies = []
+    # Tier 3 — Follow-up 2 (case studies — fixed slots + free uploads)
+    fu2_fixed = []
     for label, fname in CASE_STUDIES:
-        path = os.path.join(CASE_STUDY_DIR, fname)
+        path = os.path.join(FOLLOWUP2_DIR, fname)
         info = file_info(path, fname)
         info["label"] = label
-        case_studies.append(info)
+        info["fixed"] = True
+        fu2_fixed.append(info)
+    fu2_extra = [f for f in list_tier_files(FOLLOWUP2_DIR, meta.get("followup2", []))
+                 if f["filename"] not in {fname for _, fname in CASE_STUDIES}]
+    followup2 = fu2_fixed + fu2_extra
 
-    # Briefings (free-form uploads)
+    return jsonify({"ok": True,
+                    "overall":   overall,
+                    "followup1": followup1,
+                    "followup2": followup2})
+
+
+def _save_tier_file(tier, f, label, desc):
+    """Save an uploaded file to the correct tier directory and update meta."""
+    dirs = {"overall": OVERALL_DIR, "followup1": FOLLOWUP1_DIR, "followup2": FOLLOWUP2_DIR}
+    folder = dirs.get(tier)
+    if not folder:
+        return None, "Unknown tier"
+    safe = re.sub(r"[^\w.\-]", "_", f.filename)
+    dest = os.path.join(folder, safe)
+    f.save(dest)
     meta = load_library_meta()
-    briefings = []
-    for b in meta.get("briefings", []):
-        path = os.path.join(BRIEFING_DIR, b["filename"])
-        info = file_info(path, b["filename"])
-        info["label"]       = b.get("label", b["filename"])
-        info["description"] = b.get("description", "")
-        info["uploaded_at"] = b.get("uploaded_at", "")
-        briefings.append(info)
+    tier_list = meta.setdefault(tier, [])
+    tier_list[:] = [x for x in tier_list if x["filename"] != safe]
+    tier_list.append({
+        "filename":    safe,
+        "label":       label or f.filename,
+        "description": desc,
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    save_library_meta(meta)
+    return file_info(dest, safe), None
 
-    return jsonify({"ok": True, "decks": decks,
-                    "case_studies": case_studies, "briefings": briefings})
+
+@app.route("/api/library/<tier>/upload", methods=["POST"])
+def upload_to_tier(tier):
+    """Upload a file to any tier: overall | followup1 | followup2."""
+    if tier not in ("overall", "followup1", "followup2"):
+        return jsonify({"ok": False, "error": "Unknown tier"}), 400
+    f     = request.files.get("file")
+    label = request.form.get("label", "")
+    desc  = request.form.get("description", "")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file provided"}), 400
+    info, err = _save_tier_file(tier, f, label, desc)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "message": f"Uploaded to {tier}", **info})
 
 
-@app.route("/api/library/deck/<sector_key>", methods=["POST"])
-def upload_deck(sector_key):
-    """Replace a sector deck."""
+@app.route("/api/library/<tier>/delete/<filename>", methods=["DELETE"])
+def delete_from_tier(tier, filename):
+    """Delete a file from a tier (only free-upload files, not fixed slots)."""
+    dirs = {"overall": OVERALL_DIR, "followup1": FOLLOWUP1_DIR, "followup2": FOLLOWUP2_DIR}
+    folder = dirs.get(tier)
+    if not folder:
+        return jsonify({"ok": False, "error": "Unknown tier"}), 400
+    safe = re.sub(r"[^\w.\-]", "_", filename)
+    path = os.path.join(folder, safe)
+    if os.path.exists(path):
+        os.remove(path)
+    meta = load_library_meta()
+    tier_list = meta.get(tier, [])
+    meta[tier] = [x for x in tier_list if x["filename"] != safe]
+    save_library_meta(meta)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/library/followup1/deck/<sector_key>", methods=["POST"])
+def replace_deck(sector_key):
+    """Replace a specific sector deck (fixed slot in followup1)."""
     if sector_key not in SECTOR_DECKS:
         return jsonify({"ok": False, "error": "Unknown sector"}), 400
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file"}), 400
     fname = SECTOR_DECKS[sector_key]
-    dest  = os.path.join(DECK_DIR, fname)
+    dest  = os.path.join(FOLLOWUP1_DIR, fname)
     f.save(dest)
-    return jsonify({"ok": True, "message": f"Deck updated for {SECTOR_LABELS[sector_key]}",
+    return jsonify({"ok": True, "message": f"Deck updated: {SECTOR_LABELS[sector_key]}",
                     **file_info(dest, fname)})
 
 
-@app.route("/api/library/case-study/<int:index>", methods=["POST"])
-def upload_case_study(index):
-    """Replace a case study by index."""
+@app.route("/api/library/followup2/case-study/<int:index>", methods=["POST"])
+def replace_case_study(index):
+    """Replace a specific case study (fixed slot in followup2)."""
     if index < 0 or index >= len(CASE_STUDIES):
         return jsonify({"ok": False, "error": "Invalid index"}), 400
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file"}), 400
     _, fname = CASE_STUDIES[index]
-    dest = os.path.join(CASE_STUDY_DIR, fname)
+    dest = os.path.join(FOLLOWUP2_DIR, fname)
     f.save(dest)
     return jsonify({"ok": True, "message": f"Case study {index+1} updated",
                     **file_info(dest, fname)})
 
 
-@app.route("/api/library/briefing", methods=["POST"])
-def upload_briefing():
-    """Upload a new briefing document (PDF, DOCX, PPTX)."""
-    f     = request.files.get("file")
-    label = request.form.get("label", "")
-    desc  = request.form.get("description", "")
-    if not f or not f.filename:
-        return jsonify({"ok": False, "error": "No file"}), 400
-    safe_fname = re.sub(r"[^\w.\-]", "_", f.filename)
-    dest = os.path.join(BRIEFING_DIR, safe_fname)
-    f.save(dest)
-    meta = load_library_meta()
-    # Remove existing entry with same filename
-    meta["briefings"] = [b for b in meta["briefings"] if b["filename"] != safe_fname]
-    meta["briefings"].append({
-        "filename":    safe_fname,
-        "label":       label or f.filename,
-        "description": desc,
-        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    })
-    save_library_meta(meta)
-    return jsonify({"ok": True, "message": f"Briefing '{label or f.filename}' uploaded",
-                    **file_info(dest, safe_fname)})
-
-
-@app.route("/api/library/briefing/<filename>", methods=["DELETE"])
-def delete_briefing(filename):
-    """Delete a briefing document."""
-    safe = re.sub(r"[^\w.\-]", "_", filename)
-    path = os.path.join(BRIEFING_DIR, safe)
-    if os.path.exists(path):
-        os.remove(path)
-    meta = load_library_meta()
-    meta["briefings"] = [b for b in meta["briefings"] if b["filename"] != safe]
-    save_library_meta(meta)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/library/download/<category>/<filename>")
-def download_library_file(category, filename):
+@app.route("/api/library/download/<tier>/<filename>")
+def download_library_file(tier, filename):
     """Download any library file."""
-    safe = re.sub(r"[^\w.\-]", "_", filename)
-    dirs = {"decks": DECK_DIR, "case_studies": CASE_STUDY_DIR, "briefings": BRIEFING_DIR}
-    folder = dirs.get(category)
+    dirs = {"overall": OVERALL_DIR, "followup1": FOLLOWUP1_DIR, "followup2": FOLLOWUP2_DIR}
+    folder = dirs.get(tier)
     if not folder:
         return "Not found", 404
+    safe = re.sub(r"[^\w.\-]", "_", filename)
     path = os.path.join(folder, safe)
     if not os.path.exists(path):
         return "File not found", 404

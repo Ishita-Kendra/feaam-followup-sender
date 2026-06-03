@@ -331,19 +331,24 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; font-
 .send-result.err { background: #2d1117; border: 1px solid #f85149; color: #f85149; }
 
 /* ── Reference Library ───────────────────────────────────────── */
-.library-wrap { max-width: 1000px; display: flex; flex-direction: column; gap: 28px; }
+.library-wrap { max-width: 1060px; display: flex; flex-direction: column; gap: 22px; }
 .library-header h2 { color: #e6edf3; font-size: 20px; margin-bottom: 6px; }
 .library-desc { color: #8b949e; font-size: 13px; line-height: 1.6; }
 
-.lib-section {
+/* Tier container */
+.lib-tier {
   background: #161b22; border: 1px solid #30363d;
-  border-radius: 10px; padding: 20px 22px;
+  border-radius: 12px; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px;
 }
-.lib-section-title {
-  font-size: 15px; font-weight: 700; color: #e6edf3;
-  margin-bottom: 16px; display: flex; align-items: center; gap: 12px;
+.lib-tier-badge {
+  display: inline-block; padding: 4px 14px; border-radius: 20px;
+  font-size: 12px; font-weight: 700; letter-spacing: .4px; width: fit-content;
 }
-.lib-section-sub { font-size: 12px; font-weight: 400; color: #8b949e; }
+.lib-tier-badge.t1 { background: #0d2035; color: #58a6ff; border: 1px solid #1d4b7a; }
+.lib-tier-badge.t2 { background: #0d2818; color: #56d364; border: 1px solid #1f8e3d; }
+.lib-tier-badge.t3 { background: #2a1f00; color: #e3b341; border: 1px solid #4d3b10; }
+.lib-tier-desc { font-size: 13px; color: #8b949e; line-height: 1.65; }
+.lib-tier-desc strong { color: #c9d1d9; }
 .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 .lib-loading { color: #6e7681; font-size: 13px; padding: 8px; }
 
@@ -385,33 +390,30 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; font-
 }
 .lib-btn-delete:hover { border-color: #f85149; color: #f85149; }
 
-/* Briefing upload box */
-.briefing-upload-box {
-  margin-top: 16px; background: #0d1117; border: 1px dashed #30363d;
-  border-radius: 8px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;
+/* Upload row (shared across tiers) */
+.lib-upload-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: #0d1117; border: 1px dashed #30363d;
+  border-radius: 8px; padding: 12px 16px; margin-top: 4px;
 }
-.briefing-upload-title { font-size: 13px; color: #58a6ff; font-weight: 600; }
-.briefing-upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.briefing-label-input {
+.lib-label-input {
   background: #21262d; border: 1px solid #30363d; border-radius: 6px;
   padding: 7px 12px; color: #e6edf3; font-size: 13px; flex: 1; min-width: 160px;
 }
-.briefing-label-input:focus { outline: none; border-color: #58a6ff; }
-.briefing-file-btn {
+.lib-label-input:focus { outline: none; border-color: #58a6ff; }
+.lib-file-btn {
   background: #21262d; border: 1px solid #30363d; border-radius: 6px;
-  padding: 7px 14px; color: #c9d1d9; font-size: 13px; cursor: pointer;
-  white-space: nowrap;
+  padding: 7px 14px; color: #c9d1d9; font-size: 13px; cursor: pointer; white-space: nowrap;
 }
-.briefing-file-name { font-size: 12px; color: #8b949e; }
-.btn-upload-briefing {
+.lib-file-name { font-size: 12px; color: #8b949e; }
+.lib-upload-btn {
   background: #1f8e3d; border: none; border-radius: 6px;
   padding: 7px 18px; color: #fff; font-weight: 600; font-size: 13px; cursor: pointer;
-  white-space: nowrap;
 }
-.btn-upload-briefing:hover { background: #238636; }
-.briefing-upload-result { padding: 8px 12px; border-radius: 6px; font-size: 13px; }
-.briefing-upload-result.ok  { background: #0d2818; color: #56d364; border: 1px solid #1f8e3d; }
-.briefing-upload-result.err { background: #2d1117; color: #f85149; border: 1px solid #f85149; }
+.lib-upload-btn:hover { background: #238636; }
+.lib-upload-result { padding: 6px 10px; border-radius: 5px; font-size: 12px; }
+.lib-upload-result.ok  { background: #0d2818; color: #56d364; }
+.lib-upload-result.err { background: #2d1117; color: #f85149; }
 
 /* ── Sent log ────────────────────────────────────────────────── */
 .log-wrap { max-width: 1100px; }
