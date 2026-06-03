@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FEAAM Priority Sender</title>
+<link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-brand">
+    <span class="brand-dot"></span>
+    <span class="brand-name">FEAAM Priority Sender</span>
+  </div>
+  <nav class="topbar-nav">
+    <button class="nav-btn active" data-view="upload">📂 Upload</button>
+    <button class="nav-btn" data-view="leads">📋 Priority List</button>
+    <button class="nav-btn" data-view="approvals">
+      ✅ Approvals
+      <span class="approval-count hidden" id="approvalBadge">0</span>
+    </button>
+    <button class="nav-btn" data-view="sent">📤 Sent Log</button>
+    <button class="nav-btn" data-view="settings">⚙ Settings</button>
+  </nav>
+</header>
+
+<!-- ════════════════════════════════════════════════════════════════
+     UPLOAD VIEW
+═══════════════════════════════════════════════════════════════════ -->
+<section class="view active" id="view-upload">
+  <div class="upload-card">
+    <div class="upload-icon">📂</div>
+    <h2>Upload Leads File</h2>
+    <p class="upload-hint">
+      Accepts <strong>.xlsx</strong>, <strong>.xls</strong>, or <strong>.csv</strong><br>
+      Columns auto-detected — Company, Name, Email, Job Title, Sector, Employee Count
+    </p>
+    <div class="drop-zone" id="dropZone">
+      <span id="dropLabel">Drop file here or <label class="file-link" for="fileInput">browse</label></span>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden/>
+    </div>
+    <div class="upload-progress hidden" id="uploadProgress">
+      <div class="spinner"></div>
+      <span>Analysing and ranking leads…</span>
+    </div>
+    <div class="upload-result hidden" id="uploadResult"></div>
+  </div>
+
+  <div class="priority-legend">
+    <div class="legend-item"><span class="badge p1">P1</span> 250–5,000 employees — Medium companies (highest priority)</div>
+    <div class="legend-item"><span class="badge p2">P2</span> 5,000+ employees — Large companies</div>
+    <div class="legend-item"><span class="badge pu">?</span> Size unknown — add an <code>Employees</code> column to get P1/P2 auto-sorting</div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     PRIORITY LIST VIEW  (left = list, right = read panel)
+═══════════════════════════════════════════════════════════════════ -->
+<section class="view" id="view-leads">
+  <div class="leads-layout">
+
+    <!-- LEFT: priority table -->
+    <div class="leads-panel">
+      <div class="leads-toolbar">
+        <input class="search-box" id="searchBox" type="text" placeholder="Search company, name, sector…"/>
+        <div class="filter-pills">
+          <button class="pill active" data-filter="all">All</button>
+          <button class="pill" data-filter="1">P1</button>
+          <button class="pill" data-filter="2">P2</button>
+          <button class="pill" data-filter="0">Unknown</button>
+          <button class="pill" data-filter="pending">Not approved</button>
+        </div>
+      </div>
+      <div class="leads-list" id="leadsList">
+        <div class="empty-state">Upload a leads file to see the priority list.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: READ panel -->
+    <div class="read-panel" id="readPanel">
+      <div class="read-placeholder" id="readPlaceholder">
+        <div class="placeholder-icon">←</div>
+        <div class="placeholder-text">Select a lead to read the email</div>
+      </div>
+
+      <div class="read-content hidden" id="readContent">
+
+        <!-- Contact header -->
+        <div class="read-contact" id="readContact"></div>
+
+        <!-- Email preview (read-only) -->
+        <div class="email-preview-box">
+          <div class="email-preview-header">
+            <div class="email-field"><span class="email-field-label">To</span><span id="previewTo" class="email-field-value"></span></div>
+            <div class="email-field"><span class="email-field-label">Subject</span><span id="previewSubject" class="email-field-value subject-value"></span></div>
+            <div class="email-field"><span class="email-field-label">Attachment</span><span id="previewAttachment" class="email-field-value attach-value"></span></div>
+          </div>
+          <div class="email-body-preview" id="previewBody"></div>
+        </div>
+
+        <!-- Case studies section -->
+        <div class="cs-preview-section" id="csPreviewSection">
+          <div class="cs-preview-label">📄 Suggested Case Studies (optional — tick to include)</div>
+          <div class="cs-preview-list" id="csPreviewList"></div>
+        </div>
+
+        <!-- Actions -->
+        <div class="read-actions">
+          <button class="btn-ghost" id="btnRegenerate">↺ Regenerate email</button>
+          <div class="read-actions-right">
+            <button class="btn-approve" id="btnApprove">Approve → Queue ✓</button>
+          </div>
+        </div>
+
+        <div class="action-result hidden" id="readResult"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     APPROVALS VIEW
+═══════════════════════════════════════════════════════════════════ -->
+<section class="view" id="view-approvals">
+  <div class="approvals-layout">
+
+    <!-- LEFT: approval queue list -->
+    <div class="approval-queue-panel">
+      <div class="approval-queue-header">
+        <h3>Approval Queue</h3>
+        <span class="queue-count" id="queueCount">0 emails</span>
+      </div>
+      <div class="approval-queue-list" id="approvalQueueList">
+        <div class="empty-state">No emails approved yet.<br>Go to Priority List and approve leads.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: edit + send panel -->
+    <div class="approval-edit-panel" id="approvalEditPanel">
+      <div class="read-placeholder" id="approvalPlaceholder">
+        <div class="placeholder-icon">←</div>
+        <div class="placeholder-text">Select an approved email to review &amp; edit</div>
+      </div>
+
+      <div class="approval-edit-content hidden" id="approvalEditContent">
+
+        <div class="approval-contact-bar" id="approvalContactBar"></div>
+
+        <div class="field-group">
+          <label>Subject</label>
+          <input class="subject-input" id="approvalSubject" type="text"/>
+        </div>
+
+        <div class="field-group">
+          <label>Email Body — edit freely before sending</label>
+          <textarea class="body-input" id="approvalBody" rows="20"></textarea>
+        </div>
+
+        <div class="attachment-row">
+          <div>
+            <div class="attach-label">📎 Primary deck</div>
+            <div class="deck-chip" id="approvalDeckChip">—</div>
+          </div>
+          <div>
+            <div class="attach-label">📄 Case studies included</div>
+            <div class="cs-attach-list" id="approvalCsList"></div>
+          </div>
+        </div>
+
+        <div class="approval-actions">
+          <button class="btn-remove-approval" id="btnRemoveApproval">✕ Remove from queue</button>
+          <button class="btn-ghost" id="btnSaveApproval">Save edits</button>
+          <button class="btn-send disabled-send" id="btnSend" title="SMTP setup required in Settings">
+            Send ✉ <span class="send-note">(configure SMTP in Settings to enable)</span>
+          </button>
+        </div>
+
+        <!-- Send confirmation overlay -->
+        <div class="send-confirm hidden" id="sendConfirm">
+          <div class="confirm-box">
+            <p class="confirm-warning">⚠️ You are about to send a real email to:</p>
+            <p class="confirm-to" id="confirmTo"></p>
+            <p class="confirm-subj" id="confirmSubj"></p>
+            <div class="confirm-actions">
+              <button class="btn-cancel" id="btnCancelSend">Cancel</button>
+              <button class="btn-confirm-send" id="btnConfirmSend">✓ Yes, Send Now</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="send-result hidden" id="sendResult"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SENT LOG VIEW
+═══════════════════════════════════════════════════════════════════ -->
+<section class="view" id="view-sent">
+  <div class="log-wrap">
+    <h2>Sent Log</h2>
+    <table class="log-table">
+      <thead>
+        <tr><th>Sent At</th><th>Company</th><th>To</th><th>Email</th><th>Subject</th><th>Sector</th><th>Deck</th></tr>
+      </thead>
+      <tbody id="logBody">
+        <tr><td colspan="7" class="empty-cell">No emails sent yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SETTINGS VIEW
+═══════════════════════════════════════════════════════════════════ -->
+<section class="view" id="view-settings">
+  <div class="settings-card">
+    <h2>SMTP Settings — Ionos</h2>
+    <p class="settings-hint">
+      Your password is stored only on this machine in <code>settings.json</code>.
+      It is never sent anywhere except your Ionos SMTP server when you click Send.
+    </p>
+    <div class="field-group"><label>SMTP Host</label><input id="stHost" type="text"/></div>
+    <div class="field-group"><label>SMTP Port</label><input id="stPort" type="number"/></div>
+    <div class="field-group"><label>Your Ionos Email Address (sender)</label><input id="stUser" type="email" placeholder="you@yourdomain.com"/></div>
+    <div class="field-group"><label>Email Password</label><input id="stPass" type="password" placeholder="Enter to update"/></div>
+    <div class="field-group"><label>Sender Display Name</label><input id="stName" type="text"/></div>
+    <button class="btn-save-settings" id="btnSaveSettings">Save Settings</button>
+    <div class="settings-result hidden" id="settingsResult"></div>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
