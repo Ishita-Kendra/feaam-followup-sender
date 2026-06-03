@@ -17,14 +17,19 @@ from datetime import datetime
 from flask import Flask, render_template, jsonify, request, send_file
 import pandas as pd
 
-# ── Anthropic client (for company research) ───────────────────────────────────
-try:
-    import anthropic as _anthropic
-    _ai = _anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    AI_AVAILABLE = True
-except Exception:
-    _ai = None
-    AI_AVAILABLE = False
+# ── Anthropic client (lazy — initialised after settings are loaded) ───────────
+import anthropic as _anthropic
+
+def _get_ai_client():
+    """Return an Anthropic client using key from settings (or env as fallback)."""
+    s   = load_settings()
+    key = s.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY", "")
+    if not key:
+        return None, "No Anthropic API key set. Add it in Settings → Anthropic API Key."
+    try:
+        return _anthropic.Anthropic(api_key=key), None
+    except Exception as e:
+        return None, str(e)
 
 # In-memory company size cache  {company_name_lower: {"employees": int, "source": str}}
 _company_cache = {}
@@ -361,59 +366,73 @@ def research_company_size_batch(company_names: list) -> dict:
     """
     Ask Claude to look up employee counts for a list of companies.
     Returns {company_name: {"employees": int_or_None, "tier": str, "source": "ai"}}
-    Uses Claude's training knowledge + web search tool if available.
     """
-    if not AI_AVAILABLE or not company_names:
+    if not company_names:
         return {}
 
-    # Deduplicate
+    ai, err = _get_ai_client()
+    if not ai:
+        print(f"[research] Cannot start: {err}")
+        _session["research_error"] = err
+        return {}
+
     unique = list({c.strip() for c in company_names if c.strip()})
     results = {}
+    errors  = []
 
-    # Process in batches of 20 to keep prompt size manageable
-    batch_size = 20
-    for i in range(0, len(unique), batch_size):
-        batch = unique[i:i + batch_size]
+    # Batches of 25
+    for i in range(0, len(unique), 25):
+        batch         = unique[i:i + 25]
         companies_str = "\n".join(f"- {c}" for c in batch)
 
-        prompt = f"""For each company below, provide their approximate current number of employees.
-Use your training knowledge. If you are not sure, give your best estimate based on what you know about the company's industry and scale.
+        prompt = f"""You are a business research assistant. For each company listed below, state their approximate current employee headcount based on your knowledge.
 
 Companies:
 {companies_str}
 
-Reply ONLY with a JSON object mapping each company name exactly to an object with:
-- "employees": integer (best estimate), or null if completely unknown
-- "tier": "small" (<250), "medium" (250-5000), "large" (>5000), or "unknown"
-- "note": very brief note (e.g. "Global OEM", "SME", "Startup")
+Reply ONLY with a valid JSON object. Map each company name EXACTLY to:
+  "employees": integer estimate (or null if genuinely unknown)
+  "tier": "small" (<250), "medium" (250-5000), "large" (>5000), or "unknown"
+  "note": one short phrase (e.g. "Global pump OEM", "Listed energy company")
 
-Example format:
-{{"Volvo Group": {{"employees": 100000, "tier": "large", "note": "Global truck/automotive OEM"}},
- "SomeStartup": {{"employees": null, "tier": "unknown", "note": "Insufficient data"}}}}
+Example:
+{{"Volvo Group": {{"employees": 100000, "tier": "large", "note": "Global truck OEM"}},
+ "LEISTRITZ": {{"employees": 3000, "tier": "medium", "note": "German industrial OEM"}}}}
 
-Return valid JSON only, no other text."""
+Return JSON only — no markdown, no explanation."""
 
         try:
-            response = _ai.messages.create(
+            print(f"[research] Querying Claude for batch {i//25 + 1} ({len(batch)} companies)…")
+            response = ai.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=1024,
+                max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}]
             )
             raw = response.content[0].text.strip()
-            # Strip markdown code fences if present
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             data = json.loads(raw)
             for company, info in data.items():
-                results[company] = {
-                    "employees": info.get("employees"),
-                    "tier":      info.get("tier", "unknown"),
-                    "note":      info.get("note", ""),
-                    "source":    "ai",
-                }
+                if info.get("employees") or info.get("tier") != "unknown":
+                    results[company] = {
+                        "employees": info.get("employees"),
+                        "tier":      info.get("tier", "unknown"),
+                        "note":      info.get("note", ""),
+                        "source":    "ai",
+                    }
+            print(f"[research] Batch {i//25 + 1}: got {len(data)} results")
+        except json.JSONDecodeError as e:
+            err_msg = f"JSON parse error batch {i//25+1}: {e} | Raw: {raw[:200]}"
+            print(f"[research] {err_msg}")
+            errors.append(err_msg)
         except Exception as e:
-            print(f"[research] batch error: {e}")
+            err_msg = f"API error batch {i//25+1}: {e}"
+            print(f"[research] {err_msg}")
+            errors.append(err_msg)
 
+    if errors:
+        _session["research_error"] = "; ".join(errors[:2])
+    print(f"[research] Complete — {len(results)}/{len(unique)} companies resolved")
     return results
 
 
@@ -648,12 +667,13 @@ def load_settings():
         if env_pass: s["smtp_pass"] = env_pass
         return s
     return {
-        "smtp_host":   os.getenv("SMTP_HOST", "smtp.ionos.com"),
-        "smtp_port":   int(os.getenv("SMTP_PORT", "587")),
-        "smtp_user":   env_user,
-        "smtp_pass":   env_pass,
-        "sender_name": os.getenv("SENDER_NAME",
-                                 "Prof. Dr.-Ing. Dieter Gerling | FEAAM GmbH"),
+        "smtp_host":        os.getenv("SMTP_HOST", "smtp.ionos.com"),
+        "smtp_port":        int(os.getenv("SMTP_PORT", "587")),
+        "smtp_user":        env_user,
+        "smtp_pass":        env_pass,
+        "sender_name":      os.getenv("SENDER_NAME",
+                                      "Prof. Dr.-Ing. Dieter Gerling | FEAAM GmbH"),
+        "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
     }
 
 
@@ -681,7 +701,7 @@ def append_sent_log(entry):
 # ── In-memory session store ───────────────────────────────────────────────────
 # Holds the last uploaded + prioritised leads list
 _session = {"leads": [], "df": None, "research_status": "idle",
-            "research_total": 0, "research_done": 0}
+            "research_total": 0, "research_done": 0, "research_error": ""}
 
 
 def normalise_columns(df):
@@ -830,9 +850,10 @@ def research_status():
     status = _session.get("research_status", "idle")
     return jsonify({
         "ok":     True,
-        "status": status,   # idle | running | done | error | skipped
+        "status": status,
         "total":  _session.get("research_total", 0),
         "done":   _session.get("research_done", 0),
+        "error":  _session.get("research_error", ""),
         "leads":  _session["leads"] if status == "done" else [],
     })
 
@@ -954,8 +975,9 @@ def send_email():
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
     s = load_settings()
-    s_safe = {k: v for k, v in s.items() if k != "smtp_pass"}
-    s_safe["smtp_pass"] = "••••••••" if s.get("smtp_pass") else ""
+    s_safe = {k: v for k, v in s.items() if k not in ("smtp_pass", "anthropic_api_key")}
+    s_safe["smtp_pass"]        = "••••••••" if s.get("smtp_pass")        else ""
+    s_safe["anthropic_api_key"] = "••••••••" if s.get("anthropic_api_key") else ""
     return jsonify({"ok": True, "settings": s_safe})
 
 
@@ -968,6 +990,8 @@ def post_settings():
             current[key] = data[key]
     if data.get("smtp_pass") and not data["smtp_pass"].startswith("•"):
         current["smtp_pass"] = data["smtp_pass"]
+    if data.get("anthropic_api_key") and not data["anthropic_api_key"].startswith("•"):
+        current["anthropic_api_key"] = data["anthropic_api_key"]
     save_settings(current)
     return jsonify({"ok": True})
 

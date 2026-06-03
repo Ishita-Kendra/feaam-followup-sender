@@ -127,7 +127,8 @@ function startResearchPolling(total) {
           `;
           applyFilter();
         } else if (d.status === 'error') {
-          sub.textContent = 'Research encountered an error — using available data';
+          bar.style.borderColor = '#f85149';
+          sub.textContent = d.error || 'Research error — check Settings → Anthropic API Key';
         } else {
           _researchPollTimer = setTimeout(poll, 3000);
         }
@@ -662,12 +663,12 @@ function loadSettings() {
   fetch('/api/settings').then(r => r.json()).then(data => {
     if (!data.ok) return;
     const s = data.settings;
+    document.getElementById('stAnthropicKey').value = s.anthropic_api_key || '';
     document.getElementById('stHost').value = s.smtp_host || '';
     document.getElementById('stPort').value = s.smtp_port || 587;
     document.getElementById('stUser').value = s.smtp_user || '';
     document.getElementById('stPass').value = s.smtp_pass || '';
     document.getElementById('stName').value = s.sender_name || '';
-    // Enable send button if SMTP is configured
     if (s.smtp_user) {
       document.getElementById('btnSend').innerHTML = 'Send ✉';
       document.getElementById('btnSend').className = 'btn-send';
@@ -676,6 +677,7 @@ function loadSettings() {
 }
 document.getElementById('btnSaveSettings').addEventListener('click', () => {
   const payload = {
+    anthropic_api_key: document.getElementById('stAnthropicKey').value,
     smtp_host:   document.getElementById('stHost').value,
     smtp_port:   parseInt(document.getElementById('stPort').value) || 587,
     smtp_user:   document.getElementById('stUser').value,

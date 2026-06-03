@@ -314,6 +314,12 @@
       Your password is stored only on this machine in <code>settings.json</code>.
       It is never sent anywhere except your Ionos SMTP server when you click Send.
     </p>
+    <div class="field-group">
+      <label>Anthropic API Key <span style="color:#56d364">(required for company size research)</span></label>
+      <input id="stAnthropicKey" type="password" placeholder="sk-ant-… — get it from console.anthropic.com"/>
+      <div style="font-size:11px;color:#6e7681;margin-top:4px">Stored locally only. Never sent anywhere except Anthropic's API.</div>
+    </div>
+    <div style="height:1px;background:#30363d;margin:16px 0"></div>
     <div class="field-group"><label>SMTP Host</label><input id="stHost" type="text"/></div>
     <div class="field-group"><label>SMTP Port</label><input id="stPort" type="number"/></div>
     <div class="field-group"><label>Your Ionos Email Address (sender)</label><input id="stUser" type="email" placeholder="you@yourdomain.com"/></div>
