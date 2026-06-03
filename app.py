@@ -25,11 +25,21 @@ BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 SENT_LOG_PATH = os.path.join(BASE_DIR, "sent_log.json")
 
-# Where the sector decks live (Downloads folder)
-DECK_DIR = r"C:\Users\mypc\Downloads"
+# Running on Render (or any cloud host) vs local Windows machine
+IS_CLOUD = os.getenv("RENDER") == "true" or os.getenv("IS_CLOUD") == "true"
+
+# Where the sector decks live — local Windows path or cloud uploads folder
+DECK_DIR = os.path.join(BASE_DIR, "uploads", "decks") if IS_CLOUD \
+           else r"C:\Users\mypc\Downloads"
 
 # Where case studies live
-CASE_STUDY_DIR = r"C:\Users\mypc\OneDrive\Desktop\New folder\CASE STUDIES"
+CASE_STUDY_DIR = os.path.join(BASE_DIR, "uploads", "case_studies") if IS_CLOUD \
+                 else r"C:\Users\mypc\OneDrive\Desktop\New folder\CASE STUDIES"
+
+# Create upload dirs on cloud
+if IS_CLOUD:
+    os.makedirs(DECK_DIR, exist_ok=True)
+    os.makedirs(CASE_STUDY_DIR, exist_ok=True)
 
 # ── Sector → deck filename mapping ────────────────────────────────────────────
 SECTOR_DECKS = {
@@ -387,15 +397,22 @@ def get_case_study_path(filename):
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 def load_settings():
+    # Environment variables take priority (for Render / cloud deployments)
+    env_user = os.getenv("SMTP_USER", "")
+    env_pass = os.getenv("SMTP_PASS", "")
     if os.path.exists(SETTINGS_PATH):
         with open(SETTINGS_PATH) as f:
-            return json.load(f)
+            s = json.load(f)
+        if env_user: s["smtp_user"] = env_user
+        if env_pass: s["smtp_pass"] = env_pass
+        return s
     return {
-        "smtp_host": "smtp.ionos.com",
-        "smtp_port": 587,
-        "smtp_user": "",
-        "smtp_pass": "",
-        "sender_name": "Prof. Dr.-Ing. Dieter Gerling | FEAAM GmbH",
+        "smtp_host":   os.getenv("SMTP_HOST", "smtp.ionos.com"),
+        "smtp_port":   int(os.getenv("SMTP_PORT", "587")),
+        "smtp_user":   env_user,
+        "smtp_pass":   env_pass,
+        "sender_name": os.getenv("SENDER_NAME",
+                                 "Prof. Dr.-Ing. Dieter Gerling | FEAAM GmbH"),
     }
 
 
@@ -677,6 +694,7 @@ def health():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5055))
+    port  = int(os.getenv("PORT", 5055))
+    debug = not IS_CLOUD
     print(f"\n  FEAAM Priority Sender  ->  http://localhost:{port}\n")
-    app.run(debug=True, port=port, host="0.0.0.0")
+    app.run(debug=debug, port=port, host="0.0.0.0")
