@@ -202,17 +202,33 @@ function applyFilter() {
       (l.sector_label || '').toLowerCase().includes(q);
     return matchFilter && matchSearch;
   });
-  renderLeads();
+  // NOTE: do NOT call renderLeads() here — renderLeads calls us for filtering
+  _renderLeadsFromFiltered();
 }
 
 // ── Render leads list ──────────────────────────────────────────
 function renderLeads() {
+  // Re-filter then render
+  filteredLeads = allLeads.filter(l => {
+    const matchFilter =
+      activeFilter === 'all'     ? true :
+      activeFilter === 'pending' ? !l.approved && !l.sent :
+      String(l.priority) === activeFilter;
+    const q = searchQuery;
+    return (!matchFilter ? false : !q ||
+      (l.company      || '').toLowerCase().includes(q) ||
+      (l.full_name    || '').toLowerCase().includes(q) ||
+      (l.sector_label || '').toLowerCase().includes(q));
+  });
+  _renderLeadsFromFiltered();
+}
+
+function _renderLeadsFromFiltered() {
   const list = document.getElementById('leadsList');
   if (!allLeads.length) {
     list.innerHTML = '<div class="empty-state">Upload a leads file to see the priority list.</div>';
     return;
   }
-  applyFilter();
   if (!filteredLeads.length) {
     list.innerHTML = '<div class="empty-state">No leads match this filter.</div>';
     return;
