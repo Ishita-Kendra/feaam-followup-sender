@@ -59,11 +59,10 @@ function handleFile(file) {
       }
       allLeads = data.leads;
       showUploadResult(data);
+      applyFilter();
 
-      // If AI is researching company sizes in background, show progress bar + poll
-      if (data.ai_researching) {
-        startResearchPolling(data.ai_count);
-      }
+      // Always start research polling — deep research runs on all top 25
+      startResearchPolling(data.ai_count || data.total);
     })
     .catch(err => {
       progress.classList.add('hidden');
@@ -77,15 +76,13 @@ function showUploadResult(data) {
   const result = document.getElementById('uploadResult');
   result.className = 'upload-result ok';
   result.innerHTML = `
-    ✅ <strong>${data.total} leads loaded and ranked</strong>
+    ✅ <strong>Top ${data.total} leads loaded and ranked</strong>
     <div class="result-stats">
       <div class="stat"><span class="stat-num p1c">${data.p1}</span><span class="stat-lab">Priority 1</span></div>
       <div class="stat"><span class="stat-num p2c">${data.p2}</span><span class="stat-lab">Priority 2</span></div>
       <div class="stat"><span class="stat-num puc">${data.unknown}</span><span class="stat-lab">Size unknown</span></div>
     </div>
-    ${data.ai_researching
-      ? `<div style="font-size:12px;color:#8b949e;margin-top:8px">🔍 Claude is researching ${data.ai_count} companies — list will auto-update with P1/P2 when done</div>`
-      : ''}
+    <div style="font-size:12px;color:#8b949e;margin-top:8px">🔍 Deep-researching all ${data.total} companies — emails update as each completes</div>
     <button class="btn-goto-leads" onclick="gotoLeads()">View Priority List →</button>
   `;
   result.classList.remove('hidden');
@@ -103,21 +100,53 @@ function startResearchPolling(total) {
     fetch('/api/research-status')
       .then(r => r.json())
       .then(d => {
-        const pct = total > 0 ? Math.round((d.done / total) * 100) : 50;
+        const done  = d.done || 0;
+        const ttl   = d.total || total || 1;
+        const pct   = Math.round((done / ttl) * 100);
         fill.style.width = pct + '%';
-        sub.textContent  = `Researched ${d.done} of ${total} companies…`;
+
+        // Find which company is currently being researched
+        const researching = (d.leads || []).find(l => l.research_status === 'researching');
+        if (researching) {
+          sub.textContent = `Researching ${researching.company} (${done}/${ttl})…`;
+        } else {
+          sub.textContent = `Researched ${done} of ${ttl} companies…`;
+        }
+
+        // Progressive update — merge research results into allLeads
+        if (d.leads && d.leads.length) {
+          d.leads.forEach(updated => {
+            const idx = allLeads.findIndex(l => l.id === updated.id);
+            if (idx !== -1) {
+              // Preserve approved/sent state
+              const was = allLeads[idx];
+              allLeads[idx] = { ...updated, approved: was.approved, sent: was.sent, cs_files: was.cs_files };
+            }
+          });
+          // If a lead is currently selected, refresh its panel
+          if (selectedLead) {
+            const fresh = allLeads.find(l => l.id === selectedLead.id);
+            if (fresh && fresh.research_status === 'done' && selectedLead.research_status !== 'done') {
+              selectedLead = fresh;
+              selectLead(fresh.id);
+            }
+          }
+          applyFilter();
+        }
 
         if (d.status === 'done') {
-          // Update leads with re-scored data
-          allLeads = d.leads;
+          allLeads = d.leads.map(updated => {
+            const was = allLeads.find(l => l.id === updated.id) || {};
+            return { ...updated, approved: was.approved, sent: was.sent, cs_files: was.cs_files };
+          });
           bar.classList.add('done');
+          fill.style.width = '100%';
+          sub.textContent  = `✓ Research complete — ${done} companies analysed, emails personalised`;
           const p1 = allLeads.filter(l => l.priority === 1).length;
           const p2 = allLeads.filter(l => l.priority === 2).length;
           const pu = allLeads.filter(l => l.priority === 0).length;
-          fill.style.width = '100%';
-          sub.textContent  = `Done — found sizes for ${d.done} companies`;
           document.getElementById('uploadResult').innerHTML = `
-            ✅ <strong>${allLeads.length} leads ranked</strong>
+            ✅ <strong>Top ${allLeads.length} leads ranked &amp; researched</strong>
             <div class="result-stats">
               <div class="stat"><span class="stat-num p1c">${p1}</span><span class="stat-lab">Priority 1</span></div>
               <div class="stat"><span class="stat-num p2c">${p2}</span><span class="stat-lab">Priority 2</span></div>
@@ -130,7 +159,7 @@ function startResearchPolling(total) {
           bar.style.borderColor = '#f85149';
           sub.textContent = d.error || 'Research error — check Settings → Anthropic API Key';
         } else {
-          _researchPollTimer = setTimeout(poll, 3000);
+          _researchPollTimer = setTimeout(poll, 2500);
         }
       })
       .catch(() => { _researchPollTimer = setTimeout(poll, 5000); });
@@ -200,11 +229,18 @@ function renderLeads() {
       : l.approved
         ? '<div class="lead-status-tag approved">✓ In approval queue</div>'
         : '';
+    // Research status indicator
+    const rs = l.research_status || 'pending';
+    const researchIndicator = rs === 'done'
+      ? '<span class="research-dot done" title="Research complete">✓</span>'
+      : rs === 'researching'
+        ? '<span class="research-dot spinning" title="Researching…">⟳</span>'
+        : '<span class="research-dot pending" title="Pending research">…</span>';
     return `
       <div class="lead-card ${cls} ${sel}" data-id="${l.id}">
         <span class="badge ${badgeCls}">${badgeTxt}</span>
         <div class="lead-info">
-          <div class="lead-company">${esc(l.company || '—')}</div>
+          <div class="lead-company">${esc(l.company || '—')} ${researchIndicator}</div>
           <div class="lead-name">${esc(l.full_name || '')}${l.job_title ? ' · ' + esc(l.job_title) : ''}</div>
           <div class="lead-sector">${esc(l.sector_label || 'Sector unknown')}${l.employees ? ' · ' + l.employees.toLocaleString() + ' employees' : ''}${l.emp_source === 'ai' ? ' 🔍' : ''}</div>
           ${statusTag}
@@ -251,17 +287,35 @@ function selectLead(id) {
         <span class="badge ${badgeCls}">${badgeTxt}</span>
         ${l.sector_label ? `<span class="badge pu">${esc(l.sector_label)}</span>` : ''}
         ${l.approved ? '<span class="badge approved">✓ In queue</span>' : ''}
+        ${researchBadge}
       </div>
+      ${l.feaam_fit ? `<div class="research-summary">${esc(l.feaam_fit)}</div>` : ''}
     </div>
   `;
 
   // Email preview fields
-  document.getElementById('previewTo').textContent         = `${l.full_name || ''} <${l.email || ''}>`;
-  document.getElementById('previewSubject').textContent    = l.subject || '';
-  document.getElementById('previewAttachment').textContent = l.deck_fname
-    ? (l.deck_exists ? l.deck_fname : l.deck_fname + ' ⚠ file not found')
-    : 'No deck matched';
-  document.getElementById('previewBody').textContent       = l.body || '';
+  document.getElementById('previewTo').textContent      = `${l.full_name || ''} <${l.email || ''}>`;
+  document.getElementById('previewSubject').textContent = l.subject || '';
+
+  // Attachment — shown prominently
+  const attachEl = document.getElementById('previewAttachment');
+  if (l.deck_fname) {
+    attachEl.innerHTML = l.deck_exists
+      ? `<span class="attach-chip ok">📎 ${esc(l.deck_fname)}</span>`
+      : `<span class="attach-chip missing">📎 ${esc(l.deck_fname)} <span class="attach-warn">⚠ file not found</span></span>`;
+  } else {
+    attachEl.innerHTML = '<span class="attach-chip missing">No deck matched for this sector</span>';
+  }
+
+  // Research status in read panel
+  const rs = l.research_status || 'pending';
+  const researchBadge = rs === 'done'
+    ? `<span class="research-badge done">✓ Research complete</span>`
+    : rs === 'researching'
+      ? `<span class="research-badge running">⟳ Researching now…</span>`
+      : `<span class="research-badge pending">Pending research</span>`;
+
+  document.getElementById('previewBody').textContent = l.body || '';
 
   // Case studies
   const csList = document.getElementById('csPreviewList');

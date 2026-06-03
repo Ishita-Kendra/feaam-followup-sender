@@ -335,6 +335,8 @@ SECTOR_EMAIL_TEMPLATES = {
 
 SIGNATURE = "Prof. Dr.-Ing. Dieter Gerling\nFounder, FEAAM GmbH"
 
+TOP_N = 25   # How many top-scored leads to keep after upload
+
 EXEC_KEYWORDS = {
     "president","ceo","cto","cfo","coo","cso","chief","founder","owner",
     "partner","chairman","board","executive","evp","svp","vice president",
@@ -468,83 +470,159 @@ def _lookup_wikipedia(company: str) -> dict | None:
     return None
 
 
-def research_company_size_batch(company_names: list) -> dict:
+def _lookup_wikipedia_full(company: str) -> dict:
     """
-    Research employee counts using 3 sources (in order):
-      1. Built-in database  — instant, no network
-      2. Wikipedia API      — free, no key needed
-      3. Claude API         — if Anthropic key is set in Settings (best coverage)
-    Returns {company_name: {"employees": int, "tier": str, "source": str}}
+    Fetch Wikipedia intro text and infobox for a company.
+    Returns dict with employees, description, products fields.
     """
-    if not company_names:
-        return {}
+    import urllib.request as _ureq, urllib.parse as _uparse
+    result = {}
+    try:
+        search_url = "https://en.wikipedia.org/w/api.php?" + _uparse.urlencode({
+            "action": "query", "list": "search",
+            "srsearch": company + " company",
+            "format": "json", "srlimit": 2,
+        })
+        req = _ureq.Request(search_url, headers={"User-Agent": "FEAAM-Sender/1.0"})
+        with _ureq.urlopen(req, timeout=8) as r:
+            hits = json.loads(r.read()).get("query", {}).get("search", [])
+        if not hits:
+            return result
+        title = hits[0]["title"]
 
-    unique  = list({c.strip() for c in company_names if c.strip()})
-    results = {}
+        # Get intro text (plain extract)
+        extract_url = "https://en.wikipedia.org/w/api.php?" + _uparse.urlencode({
+            "action": "query", "titles": title, "prop": "extracts",
+            "exintro": True, "explaintext": True,
+            "format": "json",
+        })
+        req3 = _ureq.Request(extract_url, headers={"User-Agent": "FEAAM-Sender/1.0"})
+        with _ureq.urlopen(req3, timeout=8) as r:
+            pages = json.loads(r.read()).get("query", {}).get("pages", {})
+        extract = (list(pages.values())[0].get("extract", "") or "")[:2000]
 
-    # ── Pass 1: built-in database ─────────────────────────────────────────────
-    still_unknown = []
-    for company in unique:
-        hit = _lookup_known(company)
-        if hit:
-            results[company] = hit
-            print(f"[research] DB hit: {company} → {hit['employees']} ({hit['tier']})")
-        else:
-            still_unknown.append(company)
-    print(f"[research] Pass 1 (database): {len(results)}/{len(unique)} resolved, "
-          f"{len(still_unknown)} still unknown")
+        # Get wikitext for infobox employee count
+        page_url = "https://en.wikipedia.org/w/api.php?" + _uparse.urlencode({
+            "action": "query", "titles": title, "prop": "revisions",
+            "rvprop": "content", "rvslots": "main",
+            "format": "json", "rvsection": "0",
+        })
+        req2 = _ureq.Request(page_url, headers={"User-Agent": "FEAAM-Sender/1.0"})
+        with _ureq.urlopen(req2, timeout=8) as r:
+            pages2 = json.loads(r.read()).get("query", {}).get("pages", {})
+        wikitext = (list(pages2.values())[0]
+                    .get("revisions", [{}])[0]
+                    .get("slots", {}).get("main", {}).get("*", ""))
 
-    # ── Pass 2: Wikipedia ─────────────────────────────────────────────────────
-    if still_unknown:
-        wiki_unknown = []
-        for company in still_unknown:
-            hit = _lookup_wikipedia(company)
-            if hit:
-                results[company] = hit
-                print(f"[research] Wiki hit: {company} → {hit['employees']} ({hit['tier']})")
-            else:
-                wiki_unknown.append(company)
-        print(f"[research] Pass 2 (Wikipedia): {len(results)}/{len(unique)} resolved, "
-              f"{len(wiki_unknown)} still unknown")
-        still_unknown = wiki_unknown
+        # Extract employee count
+        m = re.search(r"num_employees\s*=\s*([\d,]+)", wikitext)
+        if m:
+            emp = int(m.group(1).replace(",", ""))
+            tier = "medium" if 250 <= emp <= 5000 else ("large" if emp > 5000 else "small")
+            result["employees"] = emp
+            result["tier"]      = tier
 
-    # ── Pass 3: Claude API (if key available) ─────────────────────────────────
-    if still_unknown:
-        ai, err = _get_ai_client()
-        if ai:
-            for i in range(0, len(still_unknown), 25):
-                batch = still_unknown[i:i + 25]
-                companies_str = "\n".join(f"- {c}" for c in batch)
-                prompt = f"""For each company below, give approximate employee headcount.
-Use your training knowledge. Give best estimate even for less-known companies.
+        result["description"] = extract.strip()
+        result["wiki_title"]  = title
+        result["source"]      = "wikipedia"
+    except Exception as e:
+        print(f"[wiki_full] {company}: {e}")
+    return result
 
-Companies:
-{companies_str}
 
-Reply with ONLY a JSON object:
-{{"Company Name": {{"employees": 5000, "tier": "medium", "note": "Industrial OEM"}}}}
-tier = "small"(<250), "medium"(250-5000), "large"(>5000), "unknown"
-Return valid JSON only."""
-                try:
-                    resp = ai.messages.create(
-                        model="claude-haiku-4-5", max_tokens=2048,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    raw  = re.sub(r"^```(?:json)?\s*|\s*```$", "",
-                                  resp.content[0].text.strip())
-                    data = json.loads(raw)
-                    for co, info in data.items():
-                        if info.get("employees") or info.get("tier","unknown") != "unknown":
-                            results[co] = {**info, "source": "ai"}
-                except Exception as e:
-                    print(f"[research] Claude API error: {e}")
-                    _session["research_error"] = str(e)
-            print(f"[research] Pass 3 (Claude): {len(results)}/{len(unique)} resolved")
-        else:
-            print(f"[research] Pass 3 skipped — {err}")
+def deep_research_company(company: str, contact_name: str = "", contact_title: str = "",
+                           sector: str = "", location: str = "") -> dict:
+    """
+    Deep-research one company using Wikipedia + Claude (if available).
+    Returns:
+      {
+        "employees": int,
+        "tier": str,
+        "description": str,
+        "products": str,
+        "feaam_fit": str,
+        "research_note": str,
+        "source": str,
+      }
+    """
+    result = {
+        "employees": 0, "tier": "unknown",
+        "description": "", "products": "",
+        "feaam_fit": "", "research_note": "",
+        "source": "none",
+    }
 
-    print(f"[research] Final: {len(results)}/{len(unique)} companies resolved")
-    return results
+    # ── Pass 1: built-in database ─────────────────────────────────
+    db_hit = _lookup_known(company)
+    if db_hit:
+        result.update(db_hit)
+
+    # ── Pass 2: Wikipedia ─────────────────────────────────────────
+    wiki = _lookup_wikipedia_full(company)
+    if wiki:
+        if wiki.get("employees") and not result.get("employees"):
+            result["employees"] = wiki["employees"]
+            result["tier"]      = wiki["tier"]
+        if wiki.get("description"):
+            result["description"] = wiki["description"]
+        result["source"] = "wikipedia"
+
+    # ── Pass 3: Claude API — synthesis & FEAAM fit analysis ───────
+    ai, err = _get_ai_client()
+    if ai:
+        sector_label = SECTOR_LABELS.get(sector, sector or "industrial electric motors")
+        wiki_context = result["description"][:800] if result["description"] else "No Wikipedia data found."
+        prompt = f"""You are a B2B sales research assistant for FEAAM GmbH, a German electric motor
+technology company founded by Prof. Dr.-Ing. Dieter Gerling (former chair of electrical drives at
+Bundeswehr University Munich). FEAAM's core IP is a patented stator flux barrier motor architecture
+that reduces rare-earth magnet mass while maintaining or improving torque density and efficiency.
+FEAAM also offers magnet-free synchronous machine technology. They serve: humanoid robotics,
+electric forklifts, drones/UAV, e-bikes/scooters, HVAC, electric pumps, wind energy, and
+gaming/force-feedback simulation.
+
+Research target:
+- Company: {company}
+- Contact: {contact_name or "unknown"} ({contact_title or "unknown role"})
+- Sector hint: {sector_label}
+- Location: {location or "unknown"}
+
+Wikipedia summary (may be incomplete or wrong company):
+{wiki_context}
+
+Based on your training knowledge about {company}, provide a JSON object with these fields:
+{{
+  "employees": <integer estimate, 0 if truly unknown>,
+  "tier": "<small|medium|large|unknown>  (small<250, medium 250-5000, large>5000)",
+  "description": "<2-3 sentence factual description of what {company} actually makes/does>",
+  "products": "<comma-separated list of {company}'s key products or application areas most relevant to electric motors>",
+  "feaam_fit": "<2-3 sentences explaining specifically why FEAAM's motor technology would benefit {company}'s products — be concrete, reference their actual products>",
+  "research_note": "<one sentence on {contact_name}'s likely decision-making role or how to personalise the pitch to a {contact_title}>"
+}}
+
+Return ONLY valid JSON. Be factual — if you don't know the company well, say so briefly in description."""
+
+        try:
+            resp = ai.messages.create(
+                model="claude-haiku-4-5", max_tokens=600,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            raw  = re.sub(r"^```(?:json)?\s*|\s*```$", "", resp.content[0].text.strip())
+            data = json.loads(raw)
+            # Merge — Claude overrides Wikipedia where it has data
+            if data.get("employees"): result["employees"] = data["employees"]
+            if data.get("tier") and data["tier"] != "unknown": result["tier"] = data["tier"]
+            for k in ("description", "products", "feaam_fit", "research_note"):
+                if data.get(k): result[k] = data[k]
+            result["source"] = "ai"
+        except Exception as e:
+            print(f"[deep_research] Claude error for {company}: {e}")
+
+    # Finalise tier from employee count if still unknown
+    if result["tier"] == "unknown" and result["employees"]:
+        emp = result["employees"]
+        result["tier"] = "medium" if 250 <= emp <= 5000 else ("large" if emp > 5000 else "small")
+
+    return result
 
 
 def get_company_size(company_name: str) -> dict:
@@ -619,23 +697,57 @@ def score_lead(row_dict):
 
 
 def generate_email(lead):
-    """Build subject + body for an add-value content email."""
-    sector   = lead.get("sector")
-    company  = lead.get("company", "your company")
-    first    = lead.get("first_name") or (lead.get("full_name") or "").split()[0] or "there"
-    title    = lead.get("job_title", "")
-    level    = "exec" if is_exec(title) else "tech"
+    """
+    Build subject + body for an add-value content email.
+    Uses deep-research data (feaam_fit, products, description) when available
+    to personalise the email beyond the generic sector template.
+    """
+    sector       = lead.get("sector")
+    company      = lead.get("company", "your company")
+    first        = lead.get("first_name") or (lead.get("full_name") or "").split()[0] or "there"
+    title        = lead.get("job_title", "")
+    level        = "exec" if is_exec(title) else "tech"
+    feaam_fit    = (lead.get("feaam_fit") or "").strip()
+    products     = (lead.get("products") or "").strip()
+    research_note= (lead.get("research_note") or "").strip()
 
     tmpl = SECTOR_EMAIL_TEMPLATES.get(sector, SECTOR_EMAIL_TEMPLATES["humanoid_robot"])
-    subject  = tmpl["subject"].format(company=company)
-    intro    = tmpl["intro_exec"] if level == "exec" else tmpl["intro_tech"]
-    cta_name = tmpl["cta"]
-    deck_fname = SECTOR_DECKS.get(sector, "")
+    cta_name     = tmpl["cta"]
     sector_label = SECTOR_LABELS.get(sector, "your sector")
+
+    # ── Subject: use research-specific subject when products are known ─────
+    if products:
+        first_product = products.split(",")[0].strip()
+        subject = f"FEAAM motor architecture for {company}'s {first_product} drive systems"
+    else:
+        subject = tmpl["subject"].format(company=company)
+
+    # ── Intro paragraph ────────────────────────────────────────────────────
+    if feaam_fit:
+        # Research-driven personalised intro
+        intro = feaam_fit
+    else:
+        intro = tmpl["intro_exec"] if level == "exec" else tmpl["intro_tech"]
+
+    # ── Products mention (only if researched) ─────────────────────────────
+    products_line = ""
+    if products:
+        products_line = (
+            f"Your portfolio — including {products} — represents exactly the kind of "
+            f"application where motor architecture choices have a direct impact on system "
+            f"performance, BOM cost, and supply-chain resilience.\n\n"
+        )
+
+    # ── Personalisation note for contact role ─────────────────────────────
+    role_line = ""
+    if research_note and title:
+        role_line = f"{research_note}\n\n"
 
     body = (
         f"Hi {first},\n\n"
         f"{intro}\n\n"
+        f"{products_line}"
+        f"{role_line}"
         f"I am attaching our {cta_name} deck for your reference — it outlines how FEAAM's "
         f"technology applies to {sector_label} applications, including specific performance "
         f"benchmarks and design considerations.\n\n"
@@ -844,24 +956,31 @@ def index():
     return render_template("index.html")
 
 
-def _build_leads(df):
-    """Build the leads list from a dataframe (after cache is populated)."""
+def _build_leads(df, preserve_ids=None):
+    """
+    Score ALL leads, sort, return top TOP_N.
+    preserve_ids: optional dict {company+email -> lead_id} to keep stable IDs on rebuild.
+    """
     leads = []
     for _, row in df.iterrows():
         d = row_to_dict(row, df)
         if not d["email"] and not d["company"]:
             continue
         priority, sector, score = score_lead(d)
+
+        # Preserve stable ID across rebuilds (so approval queue refs survive)
+        stable_key = (d["company"] + "|" + d["email"]).lower()
+        lead_id = (preserve_ids or {}).get(stable_key, str(uuid.uuid4()))
+
         subject, body = generate_email({**d, "sector": sector})
         deck_path, deck_fname = get_deck_path(sector)
         suggested_cs = [
             {"label": CASE_STUDIES[i][0], "filename": CASE_STUDIES[i][1]}
             for i in SECTOR_CASE_STUDY_MAP.get(sector, [])
         ]
-        # Attach AI-researched company info
         cached = get_company_size(d["company"])
         leads.append({
-            "id":              str(uuid.uuid4()),
+            "id":              lead_id,
             "company":         d["company"],
             "full_name":       d["full_name"],
             "first_name":      d["first_name"],
@@ -882,10 +1001,15 @@ def _build_leads(df):
             "emp_tier":        cached.get("tier", ""),
             "emp_note":        cached.get("note", ""),
             "emp_source":      cached.get("source", ""),
+            "description":     cached.get("description", ""),
+            "products":        cached.get("products", ""),
+            "feaam_fit":       cached.get("feaam_fit", ""),
+            "research_note":   cached.get("research_note", ""),
+            "research_status": cached.get("_research_status", "pending"),
         })
     priority_order = {1: 0, 2: 1, 0: 2}
     leads.sort(key=lambda x: (priority_order[x["priority"]], -x["score"]))
-    return leads
+    return leads[:TOP_N]
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -908,40 +1032,81 @@ def upload():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-    # --- Phase 1: quick score without AI (returns instantly) ---
+    # --- Phase 1: quick score without AI — return top TOP_N instantly ---
     leads = _build_leads(df)
-    _session["leads"] = leads
-    _session["df"]    = df          # keep for re-scoring after research
+    # Mark all as pending deep research
+    for lead in leads:
+        lead["research_status"] = "pending"
+
+    _session["leads"]  = leads
+    _session["df"]     = df
+    _session["research_status"] = "running"
+    _session["research_total"]  = len(leads)
+    _session["research_done"]   = 0
+    _session["research_error"]  = ""
 
     p1 = sum(1 for l in leads if l["priority"] == 1)
     p2 = sum(1 for l in leads if l["priority"] == 2)
     pu = sum(1 for l in leads if l["priority"] == 0)
 
-    # --- Phase 2: kick off background AI research for companies with unknown size ---
-    unknown_companies = list({l["company"] for l in leads
-                               if l["priority"] == 0 and l["company"]})
-    if unknown_companies:
-        _session["research_status"] = "running"
-        _session["research_total"]  = len(unknown_companies)
-        _session["research_done"]   = 0
+    # --- Phase 2: deep research each of the top TOP_N one by one ---
+    def _research_bg():
+        try:
+            for lead in _session["leads"]:
+                if lead.get("research_status") == "skipped":
+                    continue
+                lead["research_status"] = "researching"
+                company = lead.get("company", "")
+                if not company:
+                    lead["research_status"] = "skipped"
+                    _session["research_done"] += 1
+                    continue
 
-        def _research_bg():
-            try:
-                results = research_company_size_batch(unknown_companies)
-                for company, info in results.items():
-                    _company_cache[company.strip().lower()] = info
-                # Re-score all leads now that cache is populated
-                rebuilt = _build_leads(_session["df"])
-                _session["leads"] = rebuilt
-                _session["research_status"] = "done"
-                _session["research_done"]   = len(results)
-            except Exception as e:
-                print(f"[research_bg] {e}")
-                _session["research_status"] = "error"
+                print(f"[research] Deep-researching: {company}")
+                info = deep_research_company(
+                    company=company,
+                    contact_name=lead.get("full_name", ""),
+                    contact_title=lead.get("job_title", ""),
+                    sector=lead.get("sector", ""),
+                    location=lead.get("location", ""),
+                )
 
-        threading.Thread(target=_research_bg, daemon=True).start()
-    else:
-        _session["research_status"] = "skipped"
+                # Update cache
+                cache_key = company.strip().lower()
+                _company_cache[cache_key] = info
+
+                # Update lead in place with research results
+                if info.get("employees"):
+                    lead["employees"] = info["employees"]
+                if info.get("tier") and info["tier"] != "unknown":
+                    lead["emp_tier"] = info["tier"]
+                    # Recalculate priority
+                    emp = info["employees"]
+                    if 250 <= emp <= 5000:
+                        lead["priority"] = 1
+                    elif emp > 5000:
+                        lead["priority"] = 2
+                for k in ("description", "products", "feaam_fit", "research_note"):
+                    if info.get(k):
+                        lead[k] = info[k]
+                lead["emp_source"] = info.get("source", "")
+
+                # Regenerate personalised email now that we have research data
+                new_subj, new_body = generate_email(lead)
+                lead["subject"] = new_subj
+                lead["body"]    = new_body
+
+                lead["research_status"] = "done"
+                _session["research_done"] += 1
+                print(f"[research] Done: {company} ({_session['research_done']}/{_session['research_total']})")
+
+            _session["research_status"] = "done"
+        except Exception as e:
+            print(f"[research_bg] {e}")
+            _session["research_status"] = "error"
+            _session["research_error"]  = str(e)
+
+    threading.Thread(target=_research_bg, daemon=True).start()
 
     return jsonify({
         "ok":              True,
@@ -950,14 +1115,18 @@ def upload():
         "p2":              p2,
         "unknown":         pu,
         "leads":           leads,
-        "ai_researching":  bool(unknown_companies),
-        "ai_count":        len(unknown_companies),
+        "ai_researching":  True,
+        "ai_count":        len(leads),
     })
 
 
 @app.route("/api/research-status", methods=["GET"])
 def research_status():
-    """Frontend polls this until status == 'done', then reloads leads."""
+    """
+    Frontend polls this throughout the research process.
+    Returns per-lead status + full leads list on every poll so the UI
+    can update each card as research completes.
+    """
     status = _session.get("research_status", "idle")
     return jsonify({
         "ok":     True,
@@ -965,7 +1134,7 @@ def research_status():
         "total":  _session.get("research_total", 0),
         "done":   _session.get("research_done", 0),
         "error":  _session.get("research_error", ""),
-        "leads":  _session["leads"] if status == "done" else [],
+        "leads":  _session["leads"],   # always return full list so UI updates progressively
     })
 
 

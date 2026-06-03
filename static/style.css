@@ -453,3 +453,38 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; font-
 
 /* ── Utils ───────────────────────────────────────────────────── */
 .hidden { display: none !important; }
+
+/* ── Research status indicators ──────────────────────────────── */
+.research-dot {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  margin-left: 4px; vertical-align: middle;
+}
+.research-dot.done    { color: #56d364; }
+.research-dot.pending { color: #6e7681; }
+.research-dot.spinning {
+  color: #58a6ff;
+  display: inline-block;
+  animation: spin .8s linear infinite;
+}
+
+.research-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.research-badge.done    { background: #0d2818; color: #56d364; border: 1px solid #1f8e3d; }
+.research-badge.running { background: #0d1f35; color: #58a6ff; border: 1px solid #1d4b7a; }
+.research-badge.pending { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+
+.research-summary {
+  margin-top: 8px; font-size: 12px; color: #8b949e; line-height: 1.5;
+  background: #0d1117; border-left: 2px solid #1d4b7a; padding: 6px 10px; border-radius: 0 4px 4px 0;
+}
+
+/* ── Attachment chip ─────────────────────────────────────────── */
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+}
+.attach-chip.ok      { background: #0d1f35; color: #58a6ff; border: 1px solid #1d4b7a; }
+.attach-chip.missing { background: #2a1a10; color: #e3b341; border: 1px solid #4d3b10; }
+.attach-warn { color: #e3b341; font-weight: 400; }
